@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **Pharsight project status:** this repository is an independent, GPL-3.0-derived development line based on FinSight commit `8fc5bce28ac201c713219a47d30367c6a84342f4`. It is being prepared as a Chinese-language A/H-share pharmaceutical industry and listed-company research agent for a university investment-research project. The current bootstrap contains project governance and architecture planning only; pharmaceutical-specific capabilities have not yet been implemented.
+>
+> Project documents: [Project management](docs/PROJECT_MANAGEMENT.md) · [Architecture and evidence standards](docs/ARCHITECTURE.md) · [Upstream FinSight](https://github.com/RUC-NLPIR/FinSight)
+
 <div align="center">
 
 <img src="assets/finsight-logo-v2.png" width="400">
