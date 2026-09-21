@@ -1,144 +1,178 @@
-# Pharsight Architecture and Evidence Standards
+# Pharsight 架构与证据规范
 
-## Status and constraints
+## 状态与约束
 
-This document describes the intended architecture. The bootstrap does not add pharmaceutical runtime APIs, tools, prompts, schemas, or report behavior.
+本文同时描述当前 V1 实现与后续目标架构。V1 已在不替换 FinSight 编排主干的前提下增加医药双模式、受控证据清单工具、模式提示词、中文大纲、截止日控制及精确引用校验。它已通过无网络单元测试，但尚未在项目标准 Python 3.11 和真实模型/资料上完成端到端及领域验收。
 
-Pharsight is a full-history GPL-3.0 derivative of FinSight pinned initially to commit `8fc5bce28ac201c713219a47d30367c6a84342f4`. The sibling `../FinSight` checkout remains an immutable comparison point. All implementation, configuration, tests, outputs, and generated artifacts must stay within the Pharsight repository or its ignored runtime directories.
+Pharsight 是保留完整历史的 FinSight GPL-3.0 派生项目，初始基线为 `8fc5bce28ac201c713219a47d30367c6a84342f4`。同级 `../FinSight` 是不可修改的参照。所有实现、配置、测试、输出和生成产物都必须位于 Pharsight 仓库及其忽略的运行目录内。
 
-Python 3.11 is the supported project runtime. Python 3.12 is not considered supported until the complete test and report pipeline is verified on it.
+项目标准运行时为 Python 3.11。Python 3.12 等其他版本，须在完整测试和报告流程验证并记录后才能称为受支持。
 
-## Architectural foundation
+## 架构主干
 
-Retain FinSight's memory-centric sequence as the default product spine:
-
-```text
-Research request and mode
-          |
-          v
-Data Collector ----> Deep Search / structured tools
-          |
-          v
-Shared variable memory and checkpoints
-          |
-          v
-Data Analyzer -----> deterministic Python analysis and VLM chart review
-          |
-          v
-Report Generator --> outline, sections, citation/reference processing, DOCX/PDF
-```
-
-Pharmaceutical specialization should be introduced through explicit tools, mode-specific configuration and prompts, domain calculations, report outlines, and evaluation fixtures. Do not create a parallel orchestration stack unless a documented limitation of the upstream pipeline makes that necessary.
-
-## Research modes
-
-### Pharmaceutical industry research
-
-The industry mode covers a declared market and subsector boundary, policy and reimbursement environment, epidemiology where investment-relevant, addressable-market assumptions, industry chain, technology/modalities, competitive landscape, supply and demand, catalysts, and risks.
-
-It must not silently mix incompatible definitions such as prescription sales, terminal sales, ex-factory sales, procurement value, patient counts, or treated-patient counts. Market size and growth values require geography, period, currency, price basis, and calculation notes.
-
-### Listed pharmaceutical company research
-
-The company mode covers issuer disclosures and financial quality, product portfolio, pipeline assets and indications, trial and regulatory events, commercialization, addressable markets, peers, valuation assumptions, catalysts, and risks.
-
-A/H identifiers and disclosure regimes must be explicit. Company claims must distinguish management guidance from audited results, regulator records, trial-registry records, analyst calculations, and model judgments. Pipeline status must be represented per asset, indication, jurisdiction, and trial rather than as one unqualified company-level status.
-
-## Planned extension points
-
-Future implementation should extend the existing repository in these areas:
+默认保留 FinSight 以共享内存为中心的产品链路：
 
 ```text
-src/tools/pharma/                 # Regulatory, trial, literature, payment and disclosure tools
-src/agents/*/prompts/             # Mode-specific collection, analysis and writing instructions
-src/memory/prompts/               # Domain task generation and evidence selection
-src/template/                     # Chinese industry and company outlines/templates
-configs/                          # Sanitized example configurations for both research modes
-tests/tools/pharma/               # Mocked contracts, parsing, provenance and failure cases
-tests/fixtures/pharma/            # Small redistributable, versioned source fixtures
-evaluations/                      # Ignored run artifacts; only approved summaries enter Git
+研究请求与模式
+      ↓
+Data Collector（数据采集）──→ Deep Search / 结构化工具
+      ↓
+共享变量内存与检查点
+      ↓
+Data Analyzer（数据分析）──→ 确定性 Python 分析及 VLM 图表审查
+      ↓
+Report Generator（报告生成）──→ 大纲、章节、引用及 DOCX/PDF
 ```
 
-Directories should be created only when implementing their first real, tested capability. Do not add empty modules or pretend implementations merely to match this plan.
+医药特化优先通过明确的工具、模式配置与提示词、领域计算、报告大纲和评测样例引入。除非记录并验证上游流程的具体限制，不另建一套并行编排框架。
 
-New structured tools must continue to implement FinSight's `Tool`/`ToolResult` contract and participate in existing registration and memory flows. Any future extension to that public contract requires a decision record, backward-compatibility analysis, migration plan, and regression tests.
+V1 是上述主干上的受控纵向切片：证据清单预载与采集→Memory→DataAnalyzer 纯文本分析→ReportGenerator 中文 Markdown 报告→精确引用校验。通过配置可以关闭 Deep Search、图表/VLM 以及 DOCX/PDF 转换，从而减少首次跑通的外部变量；完整三段式仍然保留，后续图检索只替换证据后端而不改报告引用契约。
 
-## Evidence-source policy
+## 研究模式
 
-### Priority order
+### 医药行业研究
 
-Use sources in this order unless a documented exception applies:
+先声明市场与细分行业边界，再研究政策及医保支付、与投资相关的流行病学、目标市场假设、产业链、技术路线、竞争格局、供需、催化剂和风险。
 
-1. regulators, government statistics, exchanges, and official trial registries;
-2. issuer filings and official company publications;
-3. peer-reviewed literature and recognized biomedical databases;
-4. reputable licensed financial or healthcare data vendors;
-5. secondary research and general web sources.
+处方销售额、终端销售额、出厂销售额、集采金额、患者数和接受治疗人数的口径不得混用。市场规模和增长数据必须注明地区、期间、币种、价格口径及计算说明。
 
-The first implementation wave should assess these primary sources:
+### 上市医药公司研究
 
-| Domain | Primary source | Intended evidence |
+覆盖发行人披露和财务质量、产品组合、管线资产及适应症、临床和监管事件、商业化、潜在市场、可比公司、估值假设、催化剂及风险。
+
+明确 A/H 证券标识和披露制度；区分管理层指引、经审计结果、监管记录、试验登记、分析师计算及模型判断。管线状态必须按资产、适应症、司法辖区和试验表述，不能简化成未经限定的公司级状态。
+
+## 当前扩展点与后续目录
+
+```text
+src/tools/pharma/                 # 已有证据清单工具；后续增加监管、试验、文献、医保及披露连接器
+src/agents/*/prompts/             # 采集、分析及写作的模式提示词
+src/memory/prompts/               # 领域任务生成与证据选择
+src/template/                     # 中文行业与公司大纲/模板
+docs/example_configs/             # 已脱敏的双模式配置及证据清单模板
+tests/pharma/                     # 契约、路由、配置、溯源和引用失败测试
+tests/fixtures/pharma/            # 小型、可再分发、版本化的来源样例
+evaluations/                      # 已忽略的运行产物；仅批准的摘要入库
+```
+
+已实现的 `PharmaEvidenceManifestTool` 继续遵循 FinSight 的 `Tool`/`ToolResult` 契约并参与现有注册与 Memory 流程。后续真实数据连接器不得用占位实现冒充可用能力；若改变公共契约，必须记录决策、向后兼容性分析、迁移方案和回归测试。
+
+## 证据来源政策
+
+### 优先顺序
+
+除非记录例外，依次优先：
+
+1. 监管机构、政府统计、交易所和官方临床试验登记；
+2. 发行人披露及公司官方公告；
+3. 同行评审文献和公认生物医学数据库；
+4. 可靠且获得授权的金融或医疗数据供应商；
+5. 二手研究和一般网页。
+
+首批应评估的一手来源：
+
+| 领域 | 主要来源 | 预期证据 |
 | --- | --- | --- |
-| China approvals and product records | [NMPA query services](https://www.nmpa.gov.cn/zwfwqjd/index.html) | Approved drugs, imported drugs, manufacturers, device records where in scope |
-| China drug review and trials | [CDE drug trial registry](https://www.chinadrugtrials.org.cn/) | Trial registration, sponsor, indication, phase/status, study details |
-| China reimbursement and procurement | [National Healthcare Security Administration procurement](https://www.nhsa.gov.cn/col/col187/index.html) | National and linked procurement policies, bid documents, selected products and implementation notices |
-| International trials | [ClinicalTrials.gov API](https://clinicaltrials.gov/data-api/about-api) | Structured study records, sponsors, interventions, outcomes, status and update times |
-| Biomedical literature | [NCBI E-utilities](https://www.ncbi.nlm.nih.gov/home/develop/api/) | PubMed/PMC identifiers, citations, abstracts and permitted full-text links |
-| United States drug regulation | [openFDA drug APIs](https://open.fda.gov/apis/drug/) | Labels, adverse-event reports, recalls, Orange Book and Drugs@FDA-linked records |
-| Hong Kong issuer disclosures | [HKEXnews](https://www3.hkexnews.hk/) | Results, annual/interim reports, announcements, prospectuses and other issuer filings |
+| 中国审批与产品记录 | [国家药监局查询服务](https://www.nmpa.gov.cn/zwfwqjd/index.html) | 药品批准、进口药品、生产企业，以及范围内的器械记录 |
+| 中国药审与临床试验 | [CDE 药物临床试验登记平台](https://www.chinadrugtrials.org.cn/) | 试验登记、申办方、适应症、阶段/状态和研究细节 |
+| 医保与集采 | [国家医保局集采专栏](https://www.nhsa.gov.cn/col/col187/index.html) | 国家及联动采购政策、招标文件、中选产品和执行通知 |
+| 国际临床试验 | [ClinicalTrials.gov API](https://clinicaltrials.gov/data-api/about-api) | 研究记录、申办方、干预措施、终点、状态和更新时间 |
+| 医学文献 | [NCBI E-utilities](https://www.ncbi.nlm.nih.gov/home/develop/api/) | PubMed/PMC 标识、书目信息、摘要及允许的全文链接 |
+| 美国药品监管 | [openFDA 药品 API](https://open.fda.gov/apis/drug/) | 标签、不良事件报告、召回及关联药品记录 |
+| 港股披露 | [披露易 HKEXnews](https://www3.hkexnews.hk/) | 业绩、年报/中报、公告及招股书 |
 
-A-share company research should prefer the disclosure portals designated by the relevant exchange or regulator and preserve the original filing URL and publication timestamp. Before automating any source, review its terms, robots/automation expectations, rate limits, update cadence, identifier semantics, and redistribution rights.
+A 股研究优先使用相应交易所或监管部门指定的披露平台，保留原始披露 URL 和发布时间。自动化接入前审查条款、自动访问预期、限速、更新频率、标识符语义和再分发权限。
 
-### Minimum evidence lineage
+### 最小证据链
 
-Every material collected record or report claim should be traceable to:
+每条重要采集记录或报告主张，应能追溯：
 
-- source publisher and URL or stable record identifier;
-- source publication/update date and retrieval timestamp;
-- research cutoff timestamp;
-- applicable company/security, drug/device, indication, geography, and reporting period;
-- original unit/currency and any normalized unit/currency;
-- transformation or formula notes;
-- evidence class: sourced fact, deterministic calculation, explicit assumption, or model judgment.
+- 发布者及 URL 或稳定记录标识；
+- 来源发布/更新日期和获取时间；
+- 研究截止时间；
+- 所涉公司/证券、药物/器械、适应症、地区及报告期间；
+- 原始与规范化后的单位和币种；
+- 转换过程或公式；
+- 内容类别：来源事实、确定性计算、明确假设或模型判断。
 
-This is a behavioral requirement, not a runtime schema introduced by the bootstrap. The concrete representation will be specified in M2 and must remain compatible with existing `ToolResult` consumers or include an explicit migration.
+V1 通过 YAML/JSON 来源清单把上述字段映射到 `ToolResult.data`，以稳定 `source_id` 贯穿 Memory、提示词、报告正文和参考资料。清单支持本地文本、CSV、JSON、YAML、PDF 以及经授权的内嵌文本；本地路径必须位于 Pharsight 仓库内，每条记录还必须具备 URL、官方稳定记录号或本地文件之一。后续连接器应输出同一组最小字段，不能绕过发布/更新时间截止日与来源编号校验。
 
-### Conflicts, missingness, and freshness
+### 冲突、缺失与时效
 
-- Preserve missing values as missing; never replace them with model-generated estimates without an explicit assumption label.
-- When sources conflict, retain both records, apply the source-priority rule, and record the resolution or unresolved conflict.
-- Track both event date and source update/publication date. They are not interchangeable.
-- Flag stale trial, approval, procurement, and financial records against source-specific freshness rules.
-- Freeze a report cutoff time so a reproduced run can explain why later information was excluded.
+- 缺失值保持缺失；除非明确标记为假设，不用模型估计偷偷填补。
+- 来源冲突时保留双方记录，按来源优先级说明处理方式；无法解决的冲突仍应显式呈现。
+- 事件日期与来源更新/发布日期分别记录，不得混用。
+- 按来源类别标记过期的试验、审批、集采及财务记录。
+- 固定报告截止时间，使复现运行能解释后来信息为何未被采用。
 
-## Analysis and report controls
+## 分析与报告控制
 
-- Domain calculations must be deterministic functions with formula documentation, controlled inputs, units, and fixture-based tests.
-- Valuation outputs must expose forecast and discounting assumptions and must not imply precision beyond the evidence.
-- Trial probability, market share, pricing, patient population, and launch timing assumptions must be clearly labeled and sensitivity-tested when material.
-- Charts and tables must carry source, period, unit, and cutoff annotations; report prose must retain citation linkage to their underlying evidence.
-- Reports must include investment-risk disclosures and a statement that the content is not medical advice.
-- A failed, blocked, rate-limited, or incomplete source must be visible in the run record and report limitations; it must not be silently replaced with invented data.
+- 领域计算应为确定性函数，有公式说明、受控输入、单位及样例测试。
+- 估值结果公开预测和折现假设，不暗示超过证据支持程度的精度。
+- 临床成功概率、份额、定价、患者规模和上市时间等重要假设必须标注，必要时进行敏感性分析。
+- 图表及表格标明来源、期间、单位和截止时间，正文保留其底层证据引用。
+- 报告附投资风险和非医疗建议声明。
+- 失败、阻塞、限速或不完整的来源必须出现在运行记录及报告限制中，不能被虚构数据替代。
 
-## Testing strategy
+## 测试策略
 
-1. **Contract tests:** tool metadata, parameter validation, `ToolResult` shape, provenance, and serialization.
-2. **Parser tests:** frozen, legally redistributable fixtures for normal, empty, malformed, renamed-field, and partial records.
-3. **Calculation tests:** formulas, units, currencies, date boundaries, missingness, and sensitivity cases.
-4. **Agent regression tests:** controlled memory inputs verify mode routing, evidence labels, citations, and report-outline behavior.
-5. **Opt-in integration tests:** live source checks with timeouts, retries, rate limits, no credentials in logs, and no brittle value assertions.
-6. **End-to-end evaluation:** frozen A-share, H-share, and industry cases scored for factuality, citation coverage, reproducibility, and report quality.
+1. **契约测试：**工具元数据、参数校验、`ToolResult` 形态、溯源和序列化。
+2. **解析测试：**合法可再分发的固定样例，覆盖正常、空值、异常、字段重命名和部分记录。
+3. **计算测试：**公式、单位、币种、日期边界、缺失及敏感性。
+4. **智能体回归测试：**受控 Memory 输入，验证模式路由、证据标签、引用和大纲行为。
+5. **可选集成测试：**实时来源检查，带超时、重试和限速；日志不含凭据，不对易变数值作脆弱断言。
+6. **端到端评测：**固定 A 股、H 股及行业案例，评估事实、引用、复现和报告质量。
 
-No live network dependency should be required for the default unit-test suite.
+默认单元测试不得依赖实时网络。
 
-## Architecture decisions
+## 架构决策
 
-| ID | Date | Decision | Consequence |
+| ID | 日期 | 决定 | 结果 |
 | --- | --- | --- | --- |
-| ADR-001 | 2026-09-14 | Maintain Pharsight as an independent full-history fork rather than modifying the sibling checkout | Domain code can evolve independently; GPL obligations and upstream synchronization must remain explicit |
-| ADR-002 | 2026-09-14 | Support both A/H pharmaceutical industry and listed-company research | Prompts, configurations, outlines, fixtures, and evaluation must keep the two modes distinct |
-| ADR-003 | 2026-09-14 | Target a university investment-research audience with securities-report conventions | Reproducibility and method disclosure are release gates alongside report presentation |
-| ADR-004 | 2026-09-14 | Standardize on Python 3.11 | Development and CI must verify 3.11; other versions require separate compatibility evidence |
-| ADR-005 | 2026-09-14 | Preserve the existing FinSight orchestration as the initial product spine | Prefer domain extensions and tested adapters before considering orchestration replacement |
+| ADR-001 | 2026-09-14 | 独立保留完整历史的派生仓库，不修改同级检出 | 医药代码可独立演进，GPL 义务和上游同步须明确 |
+| ADR-002 | 2026-09-14 | 同时支持 A/H 医药行业和上市公司研究 | 提示词、配置、大纲、样例和评测需区分模式 |
+| ADR-003 | 2026-09-14 | 面向高校投研用户，遵循证券研报惯例 | 可复现性及方法披露与呈现质量同为发布门槛 |
+| ADR-004 | 2026-09-14 | 以 Python 3.11 为标准 | 开发和 CI 验证 3.11，其他版本单独验证 |
+| ADR-005 | 2026-09-14 | 初期保留 FinSight 编排主干 | 先扩展领域与测试适配器，再考虑替换编排 |
+| ADR-006 | 2026-09-14 | Chunk、Graph、Hybrid 位于稳定 `EvidenceBackend` 后，统一返回结构化证据 | 存储和算法可演进，生成器不耦合图或向量库 |
+| ADR-007 | 2026-09-14 | V1 采用精确证据 ID 和程序化参考文献 | 未知或无法追溯的引用阻断输出，不使用上游模糊匹配 |
+| ADR-008 | 2026-09-14 | 最初拟以证据工具及 DataAnalyzer 构成薄切片 | 已被 ADR-009 取代；保留为决策历史 |
+| ADR-009 | 2026-09-21 | 以配置开关和领域提示词适配完整三段式主干 | 首次运行可关闭联网、图表和格式转换，但不绕过 DataCollector/Analyzer/ReportGenerator |
 
-Future entries should record the problem, considered alternatives, decision, consequences, owner, and superseding decision when applicable.
+未来决策记录须注明问题、考虑过的方案、决定、影响、负责人及取代关系。
+
+### V1 决策说明
+
+完整理由、契约、图演进路径、实施顺序和验收标准见 [医药投研 RAG V1 方案](./v1/PHARMA_RAG_V1.md)。
+
+#### ADR-006 — 稳定的证据检索边界
+
+- **问题：**现有 Memory 相关数据检索作用于整个工具结果摘要，缺少医药研究所需的证据粒度、限定条件、快照和图路径。
+- **备选：**替换共享 `IndexBuilder`；将图对象直接塞进 Memory/提示词；增加隔离的后端协议。
+- **决定：**增加统一返回结构化 `EvidenceHit` 的 `EvidenceBackend`，在后端实现 Chunk、Graph 和 Hybrid。
+- **影响：**V1 增加少量适配层；未来图存储和算法可替换；契约与样例成为兼容性边界。
+- **责任角色：**数据与工具；具体负责人待 V1 任务指派。
+
+#### ADR-007 — 精确引用与失败关闭
+
+- **问题：**模型自由书写的来源名称经过语义匹配后，可能给主张附上看似合理却不支持它的来源。
+- **备选：**调整相似度阈值；让模型写 URL；发放稳定证据 ID 并校验。
+- **决定：**生成器只能引用当前检索结果中的证据 ID，参考文献由元数据渲染；未知或不可追溯的 ID 阻断成功输出。
+- **影响：**引用可审计和测试，但输出格式更严格，需要专门的校验阶段。
+- **责任角色：**智能体与报告、质量与评测；具体负责人待指派。
+
+#### ADR-008 — 确定性的纯文本 V1 路径
+
+- **问题：**完整上游流程在验证证据假设前就引入工具选择、图表、VLM、来源匹配及长文写作等变量。
+- **备选：**立即适配完整研报；另建编排系统；使用薄入口直连工具与 DataAnalyzer。
+- **决定：**最初拟直接调用单一医药证据工具，将兼容结果存入 Memory，以无图表/代码执行的 DataAnalyzer 生成文本，再验证引用。
+- **影响：**后续明确“先跑通 FinSight 全流程”的优先级后，该决定被 ADR-009 取代；证据工具和无图配置仍被复用。
+- **责任角色：**智能体与报告；具体负责人待指派。
+
+#### ADR-009 — 全主干医药化与可关闭的外部能力
+
+- **问题：**薄切片无法验证 DataCollector、ReportGenerator、检查点和最终报告之间的真实兼容性，也不符合近期先跑通 Pharsight 的目标。
+- **备选：**继续维护单独入口；一次性重写编排；保留编排并把差异收敛到模式、证据工具和安全开关。
+- **决定：**保留 `DataCollector → DataAnalyzer → ReportGenerator`，增加 `pharma_company`/`pharma_industry` 模式路由、证据清单预载和精确引用；允许首次运行关闭联网搜索、图表/VLM、DOCX/PDF 和自动任务生成。
+- **影响：**对上游代码的改动集中且可回归，后续 Graph/Hybrid 只需实现同一证据输出契约；真实模型兼容性和领域质量仍必须单独验收。
+- **责任角色：**数据与工具、智能体与报告、质量与评测；具体负责人待指派。

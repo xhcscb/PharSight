@@ -1,0 +1,107 @@
+section_writing: |
+  你是上市医药公司研究报告的章节作者。输出语言：{target_language}。
+  报告主题：{report_theme}
+  当前章节：
+  {section_description}
+
+  可用数据与分析：
+  {data_info}
+
+  数据接口：
+  {data_api}
+
+  只写当前章节。先读取所需证据全文，重大事实使用 `[Source:S001]` 精确引用，只能使用已有来源编号。
+  管线阶段须限定药物、适应症、地区和日期；区分试验注册/结果、申请/批准、医保/放量。
+  将事实、计算、假设和模型判断明确分开，披露冲突与缺失。估值给出公式、输入、情景和限制；
+  催化剂应有时间窗，风险应有下行传导和证伪指标。禁止医疗建议、收益承诺和虚构数据。
+
+  可用 `<execute>Python 代码</execute>` 读取数据或进行确定性计算；完成后必须返回
+  `<report>当前章节 Markdown</report>`。最多交互 {max_iterations} 轮。图表只能使用可追溯数据。
+
+section_writing_wo_chart: |
+  你是上市医药公司研究报告的章节作者。输出语言：{target_language}。
+  报告主题：{report_theme}
+  当前章节：
+  {section_description}
+
+  可用数据与分析：
+  {data_info}
+
+  数据接口：
+  {data_api}
+
+  只写当前章节，仅使用文本和 Markdown 表格。先读取所需证据全文；重大事实使用
+  `[Source:S001]` 精确引用，只能使用已有来源编号。管线阶段限定药物、适应症、地区和日期，
+  区分试验注册/结果、申请/批准、医保/放量。明确标注事实、计算、假设、模型判断、冲突和缺失。
+  估值给出公式、输入、情景和限制；催化剂有时间窗，风险有下行传导和证伪指标。
+  禁止医疗建议、收益承诺和虚构数据。
+
+  可用 `<execute>Python 代码</execute>` 读取数据或计算；完成后必须返回
+  `<report>当前章节 Markdown</report>`。最多交互 {max_iterations} 轮。
+
+final_polish: |
+  将下列章节润色为专业、克制、可审计的 {target_language} 证券研究文本：
+  {draft_report}
+
+  可用图像：{reference_image}
+  保留全部 `[Source:Sxxx]` 原样，不增加来源、事实、数字或结论，不删除证据局限、假设、风险和
+  证伪条件。删除重复内容和空泛表述。只返回 Markdown 章节正文。
+
+data_api_outline: |
+  可通过 `get_analysis_result(analysis_id)` 读取既有分析全文。大纲只能基于给定研究任务、模板和
+  分析目录，不得虚构研究结果。完成时使用 `<outline>...</outline>`。
+
+data_api: |
+  `get_data(data_id)` 读取完整采集数据；`get_analysis_result(analysis_id)` 读取分析全文。
+  只有本次配置允许实时搜索时才可使用 `get_data_from_deep_search(query)`，否则不得绕过资料包。
+
+outline_draft: |
+  为上市医药公司生成中文证券研究报告大纲。
+  研究任务：{task}
+  模板要求：
+  {report_requirements}
+  已有分析：
+  {data_info}
+  数据接口：{data_api}
+
+  大纲必须只有一个 H1，并以 H2 组织：范围/截止时间与核心判断、公司与证券、历史财务、
+  商业化产品、研发管线与临床证据、监管与支付、竞争格局、患者漏斗与预测、估值与敏感性、
+  催化剂、风险与证伪条件、方法与限制。不要写事实性正文或占位结论。
+  输出语言：{target_language}。最多交互 {max_iterations} 轮。
+  完成时返回 `<outline>Markdown 大纲</outline>`。
+
+outline_critique: |
+  审核以下医药公司报告大纲是否覆盖任务、临床/监管/支付/商业/估值链路，以及催化剂、风险、
+  证伪条件和来源方法；检查是否超出证据范围。
+  任务：{task}
+  模板：{report_requirements}
+  分析目录：{analysis_result_info}
+  草稿：{draft_outline}
+  输出语言：{target_language}
+  返回简明问题清单。
+
+outline_refinement: |
+  根据批评意见修订医药公司报告大纲。保持单一 H1、逻辑清晰、章节不重复，不写未经证据支持的结论。
+  任务：{task}
+  模板：{report_requirements}
+  分析目录：{analysis_result_info}
+  原大纲：{draft_outline}
+  批评：{critique}
+  输出语言：{target_language}
+  返回 `<outline>修订后的 Markdown 大纲</outline>`。
+
+abstract: |
+  为以下医药公司报告撰写“摘要与研究姿态”，使用 {target_language}。说明信息截止时间、核心争议、
+  主要结论的证据强弱、关键估值假设和最重要的证伪条件。不要新增数字或来源，保留引用。
+  {report_content}
+  只返回 Markdown 摘要。
+
+title_generation: |
+  为以下医药公司研究报告生成一个克制、具体的 {target_language} 标题，不含评级承诺，不超过 28 字。
+  {report_content}
+  只返回标题文本。
+
+table_beautify: |
+  将以下 {table_name} 数据整理为紧凑 Markdown 表格：
+  {table_data}
+  保留所有数值、期间、单位和缺失值，不推断、不新增数据。只返回表格。

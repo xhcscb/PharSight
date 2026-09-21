@@ -2,6 +2,7 @@
 python-dotenv
 dill
 json_repair
+ipython
 
 # Core 
 openai

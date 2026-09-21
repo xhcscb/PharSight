@@ -489,6 +489,57 @@ class BaseAgent:
             if key not in input_data:
                 self.logger.warning(f"{key} not in input_data")
 
+    HISTORY_ELISION_NOTE = (
+        "（为控制上下文长度，较早的中间结果已省略；"
+        "如需完整记录，请从 Memory 或工作目录重新读取。）"
+    )
+
+    def _context_guard_positive_int(self, key: str, default: int) -> int:
+        try:
+            value = int(self.config.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return value if value > 0 else default
+
+    def _truncate_action_result(self, text):
+        """Cap one action result before it enters the chat history."""
+        if not isinstance(text, str):
+            return text
+        limit = self._context_guard_positive_int("max_action_result_chars", 20000)
+        if len(text) <= limit:
+            return text
+        omitted = len(text) - limit
+        return (
+            text[:limit]
+            + f"\n...（结果过长，已省略 {omitted} 字符；完整结果见 Memory 或工作目录。）"
+        )
+
+    def _trim_conversation_history(self, conversation_history: list[dict]) -> list[dict]:
+        """Bound the chat history so long agent runs stay within model context.
+
+        The initial task prompt and the most recent turns are always kept; older
+        turns are dropped from the front and replaced with an elision note.
+        """
+        if not conversation_history:
+            return conversation_history
+        budget = self._context_guard_positive_int("max_history_chars", 300000)
+        total = sum(len(str(message.get("content", ""))) for message in conversation_history)
+        if total <= budget:
+            return conversation_history
+
+        head = conversation_history[0]
+        note = {"role": "user", "content": self.HISTORY_ELISION_NOTE}
+        used = len(str(head.get("content", ""))) + len(self.HISTORY_ELISION_NOTE)
+        selected: list[dict] = []
+        for message in reversed(conversation_history[1:]):
+            size = len(str(message.get("content", "")))
+            if selected and used + size > budget:
+                break
+            selected.append(message)
+            used += size
+        selected.reverse()
+        return [head, note] + selected
+
     async def async_run(
         self, 
         input_data: dict, 
@@ -519,6 +570,7 @@ class BaseAgent:
                 current_round = int(state.get('current_round', 0))
                 if 'return_dict' in state:
                     return state['return_dict']
+                conversation_history = self._trim_conversation_history(conversation_history)
             else:
                 conversation_history = await prompt_function(input_data)
                 current_round = 0
@@ -530,6 +582,7 @@ class BaseAgent:
             self.logger.info(f"Iteration {current_round + 1}")
             current_round += 1
             self.current_round = current_round
+            conversation_history = self._trim_conversation_history(conversation_history)
             response = await self.llm.generate(messages = conversation_history, stop=stop_words)
             action_type, action_content = self._parse_llm_response(response)
             if echo:
@@ -542,7 +595,7 @@ class BaseAgent:
                 self.logger.info(f"Action result this step: {action_result['result']}")
                 self.logger.info("--------")
             conversation_history.append({"role": "assistant", "content": action_result['llm_response']})
-            conversation_history.append({"role": "user", "content": action_result['result']})
+            conversation_history.append({"role": "user", "content": self._truncate_action_result(action_result['result'])})
             self.logger.debug("--Begin of Execution Result--")
             self.logger.debug(action_result['result'])
             self.logger.debug("--End of Execution Result--")

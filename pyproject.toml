@@ -3,12 +3,12 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "finsight"
-version = "0.2.0"
-description = "FinSight: Multi-agent financial deep research system for publication-ready reports"
+name = "pharsight"
+version = "0.3.0"
+description = "Pharsight: evidence-aware pharmaceutical public-equity research agent derived from FinSight"
 readme = "README.md"
 license = {text = "GPL-3.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "RUC-NLPIR"},
 ]
@@ -17,7 +17,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Financial and Insurance Industry",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Office/Business :: Financial",
 ]
@@ -27,6 +26,7 @@ dependencies = [
     "aiohttp>=3.9",
     "python-dotenv>=1.0",
     "dill>=0.3",
+    "ipython>=8.0",
     "json-repair>=0.20",
     "pandas>=2.0",
     "numpy>=1.24",
@@ -77,16 +77,18 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

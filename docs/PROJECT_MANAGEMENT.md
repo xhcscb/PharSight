@@ -1,142 +1,163 @@
-# Pharsight Project Management
+# Pharsight 项目管理
 
-## Project charter
+## 项目章程
 
-**Mission:** build a reproducible pharmaceutical investment-research agent on the FinSight multi-agent foundation for a university research and demonstration project.
+**使命：**在 FinSight 多智能体基础上，建设可复现的医药行业投研智能体，用于高校研究与演示。
 
-**Primary users:** student researchers and reviewers who need securities-research-style outputs with transparent methods, inspectable evidence, and reproducible calculations.
+**主要用户：**需要证券研究风格成果、透明方法、可核查证据和可复现计算的学生研究者及评审者。
 
-**Product modes:**
+**产品模式：**
 
-1. **A/H pharmaceutical industry research** — subsector definition, policy and payment environment, market sizing, industry chain, competitive landscape, technology trends, catalysts, and risks.
-2. **A/H listed-company research** — financial quality, product and pipeline portfolio, clinical and regulatory progress, commercialization, competitive positioning, valuation assumptions, catalysts, and risks.
+1. **A/H 股医药行业研究：**细分行业边界、政策与支付环境、市场规模、产业链、竞争格局、技术趋势、催化剂和风险。
+2. **A/H 股上市医药公司研究：**财务质量、产品与研发管线、临床和监管进展、商业化、竞争定位、估值假设、催化剂和风险。
 
-Global clinical, regulatory, and biomedical-literature evidence may supplement either mode. Chinese output is the default. Pharsight provides investment-research assistance only and does not provide medical advice.
+全球临床、监管及医学文献可为两种模式提供补充证据。默认以中文输出。Pharsight 只提供投资研究辅助，不提供医疗建议。
 
-## Current baseline
+## 当前基线
 
-| Item | Decision |
+| 项目 | 决定 |
 | --- | --- |
-| Status | M0 project bootstrap |
-| Upstream | `RUC-NLPIR/FinSight` |
-| Pinned baseline | `8fc5bce28ac201c713219a47d30367c6a84342f4` |
-| License | GPL-3.0; preserve the upstream license, notices, and source obligations |
-| Standard runtime | Python 3.11 |
-| Repository model | Independent full-history fork with official repository configured as `upstream` |
-| Team remote | Not configured; add `origin` only after the project owner selects a remote |
+| 状态 | V1 医药化主流程已实现并进入待审；真实模型端到端和领域验收尚未完成 |
+| 上游 | `RUC-NLPIR/FinSight` |
+| 固定基线 | `8fc5bce28ac201c713219a47d30367c6a84342f4` |
+| 许可证 | GPL-3.0；保留上游许可、声明和源码义务 |
+| 标准运行时 | Python 3.11 |
+| 仓库模式 | 保留完整历史的独立派生仓库；官方仓库配置为 `upstream` |
+| 团队远端 | 暂不配置；项目负责人选定后方可添加 `origin` |
 
-The sibling `../FinSight` directory is a read-only reference and must never receive Pharsight changes or generated files.
+同级 `../FinSight` 是只读参考，不能在其中写入 Pharsight 改动或运行产物。
 
-## Work organization
+## 工作组织
 
-### Roles
+### 角色
 
-One person may hold multiple roles, but every tracked item must have one accountable owner.
+同一人可以承担多个角色，但每个任务必须有一名明确的责任人。
 
-| Role | Responsibility |
+| 角色 | 职责 |
 | --- | --- |
-| Project lead | Scope, priorities, milestone acceptance, external coordination |
-| Domain research | Pharmaceutical taxonomy, research questions, source interpretation, report review |
-| Data and tooling | Connectors, normalization, provenance, rate limits, data-quality tests |
-| Agent and report | Tasks, prompts, analysis workflow, charts, templates, report assembly |
-| Quality and evaluation | Test design, benchmark cases, citation audit, reproducibility, release evidence |
+| 项目负责人 | 范围、优先级、里程碑验收和外部协调 |
+| 医药领域研究 | 医药分类、研究问题、来源解释和成果复核 |
+| 数据与工具 | 数据连接、规范化、溯源、限速和数据质量测试 |
+| 智能体与报告 | 任务、提示词、分析流程、图表、模板和报告组装 |
+| 质量与评测 | 测试、基准案例、引用审计、可复现性和发布证据 |
 
-### Task lifecycle
+### 任务状态
 
-Use the following single status field:
+状态流转：`待办（Backlog）→ 就绪（Ready）→ 进行中（In progress）→ 待审（Review）→ 完成（Done）`。
 
-`Backlog -> Ready -> In progress -> Review -> Done`
+只有记录了阻塞原因、责任人、依赖和下一步动作，才可标为`阻塞（Blocked）`；阻塞解除后返回原先的活动状态。
 
-Use `Blocked` only when the blocking condition, owner, dependency, and next action are recorded. Move the item back to its prior active state when the blocker clears.
+每个任务记录应包含：
 
-Each task record must contain:
+- 稳定 ID、简明标题、研究模式和用户成果；
+- 负责人、状态、优先级和所属里程碑；
+- 依赖、数据访问约束、证据来源和许可说明；
+- 验收标准、所需测试、风险、决策及后续事项。
 
-- stable ID and concise title;
-- research mode and user outcome;
-- owner, status, priority, and milestone;
-- dependencies and data-access constraints;
-- acceptance criteria and required tests;
-- evidence sources and licensing notes when data is involved;
-- risks, decisions, and follow-up work discovered during implementation.
+### 分支、提交和评审
 
-### Branches, commits, and review
+- 保持 `main` 可发布；常规工作使用 `feature/<ticket>-<slug>`、`fix/<ticket>-<slug>` 或 `docs/<ticket>-<slug>`。
+- 评审前与本地最新 `main` 同步；未经团队同意，不对共享分支强制推送。
+- 每个分支及提交聚焦一个逻辑事项，使用命令式 Conventional Commit 标题。
+- 评审检查范围、证据链、日期与单位语义、失败处理、测试、文档以及是否混入密钥或受限数据。
+- 从 `upstream` 同步必须单独立项，运行回归测试并记录兼容性变化。
 
-- Keep `main` releasable and use `feature/<ticket>-<slug>`, `fix/<ticket>-<slug>`, or `docs/<ticket>-<slug>` for normal work.
-- Rebase or merge the latest local `main` before review; never force-push shared branches without team agreement.
-- Keep one logical concern per branch and commit. Use imperative Conventional Commit subjects.
-- Review must confirm scope, evidence lineage, date/unit semantics, failure handling, tests, documentation, and absence of secrets or restricted data.
-- Synchronize from `upstream` through an explicit maintenance task with regression tests and a recorded compatibility note.
+## 路线图
 
-## Roadmap
-
-| Milestone | Goal | Exit criteria | Status |
+| 里程碑 | 目标 | 退出标准 | 状态 |
 | --- | --- | --- | --- |
-| M0 — Bootstrap | Establish the independent repository, boundaries, governance, and architecture | Full history retained; upstream pinned; management documents linked; source repository unchanged | Done |
-| M1 — Reproducible baseline | Reproduce upstream behavior in a clean Python 3.11 environment | Documented setup; dependency installation succeeds; upstream tests and one non-secret smoke path have recorded results | Backlog |
-| M2 — Pharmaceutical evidence tools | Add reliable structured access to regulatory, trial, literature, payment/procurement, and A/H disclosure sources | Connectors follow `ToolResult`; provenance retained; mocked unit tests and opt-in live tests cover normal, empty, malformed, rate-limit, and timeout responses | Backlog |
-| M3 — Dual-mode research workflow | Add separate industry and listed-company configurations, tasks, prompts, outlines, and report templates | Both modes run end to end against controlled fixtures; outputs clearly distinguish sourced facts, calculations, assumptions, and judgments | Backlog |
-| M4 — Domain analytics | Add pipeline, competitive-landscape, financial/valuation, catalyst, and risk modules | Deterministic calculations have fixtures and formulas; domain reviewers approve representative outputs | Backlog |
-| M5 — Evaluation and demonstration | Validate factual accuracy, citation completeness, reproducibility, and presentation | Benchmark suite passes agreed thresholds; A-share, H-share, and industry demonstrations are reproducible and documented | Backlog |
+| M0 — 初始化 | 建立独立仓库、边界、治理和架构 | 历史保留、上游基线固定、管理文档可访问、源仓库不变 | 完成 |
+| M1 — 可复现基线 | 在干净的 Python 3.11 环境中复现上游行为 | 有安装说明；依赖可安装；记录上游测试和无密钥冒烟路径 | 待办 |
+| M2 — 医药证据工具 | 接入监管、试验、文献、医保/集采和 A/H 披露 | 工具遵循 `ToolResult` 契约；保留溯源；模拟测试及可选实时测试覆盖正常、空值、异常、限速和超时 | 进行中（统一清单工具已实现） |
+| M3 — 双模式研究流程 | 增加行业与上市公司各自的配置、任务、提示词、大纲和模板 | 两种模式在受控样例上端到端运行；输出区分事实、计算、假设和判断 | 进行中（代码待端到端验收） |
+| M4 — 领域分析 | 增加管线、竞争、财务估值、催化剂和风险模块 | 确定性计算有公式及样例；代表性结果通过领域复核 | 待办 |
+| M5 — 评测与演示 | 验证事实、引用、可复现性和展示效果 | 通过约定阈值；A 股、H 股及行业演示均可复现 | 待办 |
 
-## Initial backlog
+## 初始任务池
 
-| ID | Work item | Milestone | Priority | Status |
+| ID | 任务 | 里程碑 | 优先级 | 状态 |
 | --- | --- | --- | --- | --- |
-| M1-001 | Define and verify the Python 3.11 development environment and dependency lock strategy | M1 | P0 | Backlog |
-| M1-002 | Run and record the unchanged upstream unit-test baseline | M1 | P0 | Backlog |
-| M1-003 | Define a secret-free smoke test and output-retention policy | M1 | P1 | Backlog |
-| M2-001 | Specify the common evidence metadata and source-quality rules | M2 | P0 | Backlog |
-| M2-002 | Prototype NMPA/CDE approval and China trial-registry access | M2 | P0 | Backlog |
-| M2-003 | Prototype ClinicalTrials.gov and PubMed/NCBI access | M2 | P0 | Backlog |
-| M2-004 | Assess national reimbursement/procurement and A/H disclosure access, terms, and rate limits | M2 | P0 | Backlog |
-| M2-005 | Add connector contract, fixture, and provenance tests | M2 | P0 | Backlog |
-| M3-001 | Define pharmaceutical industry research tasks and Chinese report outline | M3 | P0 | Backlog |
-| M3-002 | Define listed-company research tasks and Chinese report outline | M3 | P0 | Backlog |
-| M3-003 | Add mode-specific prompts, configuration validation, and controlled end-to-end fixtures | M3 | P0 | Backlog |
-| M4-001 | Specify pipeline asset/stage normalization and event timelines | M4 | P0 | Backlog |
-| M4-002 | Specify market sizing, peer comparison, valuation assumptions, catalysts, and risk calculations | M4 | P1 | Backlog |
-| M5-001 | Select representative A-share, H-share, and industry benchmark cases with frozen cutoffs | M5 | P0 | Backlog |
-| M5-002 | Define factuality, citation, calculation, reproducibility, and report-quality scorecards | M5 | P0 | Backlog |
+| M1-001 | 定义并验证 Python 3.11 开发环境及依赖锁定策略 | M1 | P0 | 待办 |
+| M1-002 | 运行并记录未改动的上游单元测试基线 | M1 | P0 | 待办 |
+| M1-003 | 定义无密钥冒烟测试及产物保留策略 | M1 | P1 | 待办 |
+| M2-001 | 制定统一证据元数据及来源质量规则 | M2 | P0 | 待审 |
+| M2-002 | 探索 NMPA/CDE 审批及中国临床试验登记数据访问 | M2 | P0 | 待办 |
+| M2-003 | 探索 ClinicalTrials.gov 和 PubMed/NCBI 数据访问 | M2 | P0 | 待办 |
+| M2-004 | 评估医保/集采及 A/H 披露的访问方式、条款与限速 | M2 | P0 | 待办 |
+| M2-005 | 加入连接器契约、样例和溯源测试 | M2 | P0 | 待办 |
+| M3-001 | 定义医药行业研究任务及中文报告大纲 | M3 | P0 | 待审 |
+| M3-002 | 定义上市医药公司研究任务及中文报告大纲 | M3 | P0 | 待审 |
+| M3-003 | 加入模式提示词、配置校验及受控端到端样例 | M3 | P0 | 进行中（实现及单测完成，端到端待验收） |
+| M4-001 | 定义管线资产/阶段规范化及事件时间轴 | M4 | P0 | 待办 |
+| M4-002 | 定义市场规模、同业比较、估值假设、催化剂及风险计算 | M4 | P1 | 待办 |
+| M5-001 | 选定具有固定截止时间的 A 股、H 股和行业评测案例 | M5 | P0 | 待办 |
+| M5-002 | 制定事实、引用、计算、可复现性及报告质量评分表 | M5 | P0 | 待办 |
 
-Priority meanings: P0 blocks the milestone outcome; P1 is important but not blocking; P2 is an improvement that may be deferred.
+P0 是阻塞里程碑的任务；P1 重要但不阻塞；P2 为可延后的改进。
 
-## Quality gates
+## V1 FinSight 全流程医药化纵向切片
 
-### Definition of Ready
+当前优先保持 FinSight 总体架构不变，先把 `DataCollector -> DataAnalyzer -> ReportGenerator` 改写为医药投研流程并在受控案例上跑通。代码实施与无网络测试已经完成，实施结果见 [V1 实现说明](./v1/IMPLEMENTATION_SUMMARY_2026-09-21.md)；真实语料授权、Python 3.11 环境、模型配置和人工领域复核仍未完成。[医药投研 RAG V1 方案](./v1/PHARMA_RAG_V1.md)保留为后续证据检索和图改造方向，不阻塞当前纵向切片。
 
-A task may enter `Ready` only when its user outcome, boundaries, source permissions, dependencies, acceptance criteria, and test approach are unambiguous.
+| ID | 任务与用户成果 | 模式 | 责任角色 | 依赖 | 验收要点 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| V1-001 | 固定一家上市公司、一个药物、一个适应症、截止时间、5–10 份一手文档及核心研究问题 | 上市公司 | 项目负责人＋领域研究 | 来源访问和许可审查 | 批准资料清单、问题、预期证据及具体负责人 | 待办 |
+| V1-002 | 定义研究任务书、来源登记、医药实体组合主键和固定采集/分析任务 | 上市公司 | 数据与工具＋领域研究 | V1-001；Python 3.11 基线 | 截止时间、药物—适应症—地区—事件字段和任务依赖可校验 | 待审（Schema 与配置已实现） |
+| V1-003 | 增加 `pharma_company` 模式路由，以及 Memory、采集、分析和报告的完整提示词与中文大纲 | 上市公司 | 智能体与报告 | V1-002；受控 LLM 样例 | 全流程不回退到通用提示词；所有必需提示词键可加载 | 待审（路由测试通过） |
+| V1-004 | 在既有 Tool/ToolResult 契约内接入受控资料包，传递来源编号、日期、定位和证据类型 | 上市公司 | 数据与工具 | V1-001～V1-003 | 超时、空值、错误、截止日过滤及溯源测试通过 | 待审（清单工具测试通过） |
+| V1-005 | 跑通无图表的 `DataCollector -> DataAnalyzer -> ReportGenerator` 并生成中文 Markdown 报告 | 上市公司 | 智能体与报告 | V1-003～V1-004 | 运行无异常；临床、监管/支付、商业、估值、催化剂和风险章节齐全 | 待办 |
+| V1-006 | 加入确定性引用、事实语义、截止日和声明校验，并完成人工领域复核 | 上市公司 | 质量与评测＋领域研究 | V1-005；固定模型和资料快照 | 重大事实引用覆盖率 100%；未知引用阻断发布；人工抽查无重大错误 | 进行中（程序校验完成，人工复核待办） |
+| V1-007 | 默认全量覆盖产品与管线，并把按任务证据选择接入分析和写作 | 上市公司＋行业 | 智能体与报告 | V1-004；证据包超过阈值 | 未限定 focus 时按全量口径采集分析；超阈值时只注入任务/章节相关证据，未选记录仍可按 ID 读取；缺口显式披露；单测通过 | 待审（实现与单测完成，真实运行待验） |
 
-### Definition of Done
+后续 RAG/图任务包括离线 Chunk 基线、`PharmaEvidenceSearchTool`、Claim–Evidence 构图、Graph/Hybrid 对照评测。只有 V1-006 完成并形成稳定主流程基线后，这些任务才进入“就绪”。
 
-A task may enter `Done` only when:
+## 质量门槛
 
-- acceptance criteria and relevant tests pass;
-- provenance, cutoff dates, units, currencies, and calculations are auditable;
-- errors and unavailable data fail visibly rather than producing invented results;
-- documentation and project status are current;
-- no secrets, restricted data, caches, or generated reports are staged;
-- the sibling upstream repository remains clean and unchanged;
-- residual risks and deferred work are recorded.
+### 就绪标准
 
-### Release readiness
+只有用户成果、输入输出边界、来源权限、依赖、验收标准和测试方式均明确，任务才可进入“就绪”。
 
-A milestone release requires a clean checkout reproduction, a recorded Python/dependency environment, passing automated gates, a citation audit, domain review, known-limitations notes, and demonstration inputs whose information cutoffs are fixed.
+### 完成标准
 
-## Risk register
+任务进入“完成”之前，必须满足：
 
-| Risk | Impact | Mitigation | Review point |
+- 验收标准及相关测试通过；
+- 来源、截止时间、单位、币种和计算可以审计；
+- 错误和缺失数据显式失败，而不是生成虚构结果；
+- 文档与任务状态同步更新；
+- 暂存区没有密钥、受限数据、缓存或生成报告；
+- 同级上游仓库未被改动且工作树干净；
+- 剩余风险与后续工作已记录。
+
+### 发布准备
+
+里程碑发布需要在干净检出中复现，记录 Python/依赖环境，通过自动化门槛和引用审计，完成领域复核，说明已知限制，并固定演示输入的信息截止时间。
+
+## 风险登记
+
+| 风险 | 影响 | 缓解 | 复核时点 |
 | --- | --- | --- | --- |
-| Regulatory sites lack stable public APIs or change anti-automation controls | Missing or brittle China evidence | Prefer documented endpoints/downloads, respect terms and rate limits, retain manual-ingest fallback, fail visibly | M2 design and each source change |
-| Drug, indication, company, sponsor, and ticker names do not align across sources | Incorrect joins and duplicated pipeline assets | Introduce reviewed identifiers and alias mappings; retain original labels and source IDs | M2/M4 |
-| Clinical status or approval dates become stale | Misleading catalyst and valuation analysis | Store retrieval and source-update times, enforce report cutoffs, flag stale records | Every run and evaluation |
-| Secondary sources conflict with primary records | Incorrect factual conclusions | Apply source priority, expose conflicts, and require reviewer resolution for material facts | Collection and report review |
-| Model output overstates clinical or investment certainty | Unsafe or misleading report | Label assumptions/judgments, require uncertainty and risk disclosures, add factual/citation evaluation | M3 onward |
-| Upstream changes break the fork | Regression or difficult maintenance | Pin the base, isolate domain changes, synchronize through reviewed maintenance tasks | Before each upstream sync |
-| Data licensing prevents redistribution | Compliance and reproducibility gaps | Record terms before integration; keep restricted raw data out of Git; prefer redistributable fixtures | Source approval and release |
+| 监管网站缺少稳定公开 API 或更改自动化限制 | 中国证据缺失或连接不稳定 | 优先使用有文档的接口/下载，遵守条款和限速，保留人工导入，失败显式呈现 | M2 设计及来源变更时 |
+| 药物、适应症、公司、申办方和证券代码跨来源不一致 | 错误连接或管线资产重复 | 建立经过审核的标识符和别名映射，保留原名与来源 ID | M2/M4 |
+| 临床状态或审批日期过期 | 催化剂及估值分析误导 | 保存检索及来源更新时间，强制截止时间，标记陈旧记录 | 每次运行及评测 |
+| 二手来源与一手记录冲突 | 事实结论错误 | 采用来源优先级，显式展示冲突，重大事实交由复核者判断 | 采集与报告评审 |
+| 模型夸大临床或投资确定性 | 不安全或误导性结果 | 标注假设/判断、披露不确定性和风险、加入事实与引用评测 | M3 起 |
+| 上游变更破坏派生仓库 | 回归或维护困难 | 固定基线、隔离领域改动、通过受评审的维护任务同步 | 每次上游同步前 |
+| 数据许可禁止再分发 | 合规和复现问题 | 接入前记录条款；受限原始数据不入 Git；优先选择可再分发样例 | 来源批准及发布时 |
+| 上游动作协议与模型原生工具调用（如 DSML）不兼容，采集静默失败 | 采集为空、报告事实基础不可信 | V1 走确定性证据工具路径；协议层失败关闭；以运行复盘评分表回归 | 每次运行及 M2/M3 设计变更时 |
+| 网页抓取失败与引用错配（错误/无关来源、无主张映射） | 证据链不可审计、结论误导 | 抓取空结果显式失败；引用校验与实体绑定；来源分级；ADR-007 精确引用 | 每次运行及 M4 引用审计时 |
+| 运行环境未预检（浏览器/密钥/模型协议/embedding）导致静默降级 | 抓取与采集失效、报告证据薄弱 | 启动前预检并快速失败；关键失败显式呈现而非静默降级 | 每次运行前 |
+| 提示词少样本示例泄漏导致跨主体污染 | 报告出现无关公司内容、事实错误 | 示例去实体化/占位符；生成后实体一致性 lint | M3 提示词与报告评审时 |
+| 当前开发机为 Python 3.12 且缺少部分运行依赖 | 单测通过但不能证明标准环境或真实报告可运行 | 在干净 Python 3.11 环境安装锁定依赖，执行双模式受控端到端并保存脱敏验收记录 | V1-005/M1 |
+| 受控证据清单依赖人工整理，尚无官方来源连接器 | 更新成本高，漏录或元数据错误影响结论 | 清单先作为可审计基线；M2 分来源增加连接器、契约测试和人工抽检 | M2 各来源接入时 |
+| 任务级证据选择由 LLM 判断相关性，可能漏选关键来源 | 分析/章节结论缺少证据或出现覆盖盲区 | 选择失败回退全量；提示词保留完整目录读取入口并要求显式记录缺口；引用校验必须通过 | 每次运行及 M4 引用审计时 |
+| 长流程对话历史无上限增长 | 超过模型上下文导致采集/分析中断，运行卡住 | 单条工具结果截断、历史预算裁剪（断点恢复时同样裁剪）、`fail_fast` 失败取消同组任务 | 每次运行 |
 
-## Project reporting cadence
+上述风险来自 2026-09-18 与 2026-09-20 的端到端运行复盘，详见 [FinSight 报告生成运行复盘](./v1/FINSIGHT_RUN_REVIEW_2026-09-18.md) 与 [FinSight 重跑复盘](./v1/FINSIGHT_RERUN_REVIEW_2026-09-20.md)。
 
-- Update task status whenever ownership, scope, blocker, or acceptance state changes.
-- At each milestone review, record completed outcomes, test evidence, unresolved risks, and the next milestone decision.
-- Update architecture decisions in the same change that introduces or reverses them.
-- Treat generated reports as evaluation artifacts, not as source code; retain only approved, sanitized examples.
+## 项目汇报节奏
+
+- 负责人、范围、阻塞或验收状态发生变化时，更新任务记录。
+- 每次里程碑评审记录已完成成果、测试证据、未解决风险和下一步决定。
+- 引入或推翻架构决策的同一变更中，同步更新决策日志。
+- 生成报告属于评测产物，不是源代码；仅经批准和脱敏的样例可进入 Git。

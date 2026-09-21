@@ -1,16 +1,13 @@
 import os
 import re
-import json
-import json_repair
-import dill
-from typing import List, Dict, Any, Tuple
-import asyncio
 from threading import Semaphore
+from typing import Any, Dict
+
+import json_repair
+
 from src.agents.base_agent import BaseAgent
-from src.agents import DeepSearchAgent
-from src.tools import ToolResult
-from src.utils import IndexBuilder
 from src.utils import image_to_base64
+from src.utils.evidence_selection import select_evidence_by_task
 
 # TODO: Break parameter passing into explicit arguments
 # TODO: Standardize I/O structures as lightweight classes
@@ -46,7 +43,7 @@ class DataAnalyzer(BaseAgent):
         from src.utils.prompt_loader import get_prompt_loader
         target_type = self.config.config['target_type']
         self.prompt_loader = get_prompt_loader('data_analyzer', report_type=target_type)
-        
+
         # Store prompts as instance attributes for easy access
         self.DATA_ANALYSIS_PROMPT = self.prompt_loader.get_prompt('data_analysis')
         self.DATA_ANALYSIS_PROMPT_WO_CHART = self.prompt_loader.get_prompt('data_analysis_wo_chart')
@@ -57,21 +54,36 @@ class DataAnalyzer(BaseAgent):
         self.VLM_CRITIQUE_PROMPT = self.prompt_loader.get_prompt('vlm_critique')
 
         self.use_vlm_name = use_vlm_name
-        self.vlm = self.config.llm_dict[use_vlm_name]
+        self.vlm = self.config.llm_dict.get(use_vlm_name)
         self.use_embedding_name = use_embedding_name
         self.current_phase = 'phase1'
- 
+
         self.image_save_dir = os.path.join(self.working_dir, "images")
         os.makedirs(self.image_save_dir, exist_ok = True)
-    
+
     def _set_default_tools(self):
         """
         Attach the default tools needed by the analyzer (search agent, etc.).
         """
         tool_list = []
-        tool_list.append(DeepSearchAgent(config=self.config, use_llm_name=self.use_llm_name, memory=self.memory))
-        for tool in tool_list:
-            self.memory.add_dependency(tool.id, self.id)
+        if (
+            self.config.config.get('live_web_search', True)
+            and self.config.config.get('live_web_search_in_analysis', False)
+        ):
+            try:
+                from src.agents.search_agent.search_agent import DeepSearchAgent
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Live web search requires optional web dependencies. "
+                    "Install them or set live_web_search: false."
+                ) from exc
+            tool_list.append(
+                DeepSearchAgent(
+                    config=self.config,
+                    use_llm_name=self.use_llm_name,
+                    memory=self.memory,
+                )
+            )
         self.tools = tool_list
 
     async def _prepare_executor(self):
@@ -81,14 +93,20 @@ class DataAnalyzer(BaseAgent):
         def _get_existed_data(data_id: int):
             return collect_data_list[data_id].data
         def _get_deepsearch_result(query: str):
+            if not tool_list:
+                raise RuntimeError(
+                    "Live web search is disabled for this run. Use the approved evidence pack."
+                )
+            from src.utils.async_bridge import get_async_bridge
+
             ds_agent = tool_list[0]
-            output =  asyncio.run(ds_agent.async_run(input_data={
+            output = get_async_bridge().run_async(ds_agent.async_run(input_data={
                 'task': current_task_data['task'],
                 'query': query
             }))
             output = output['final_result']
             return output
-        
+
         self.code_executor.set_variable("session_output_dir", self.image_save_dir)
         self.code_executor.set_variable("collect_data_list", [item.data for item in collect_data_list])
         self.code_executor.set_variable("get_data_from_deep_search", _get_deepsearch_result)
@@ -106,7 +124,7 @@ class DataAnalyzer(BaseAgent):
         ]
         self.code_executor.set_variable("custom_palette", custom_palette)
         await self.code_executor.execute("import seaborn as sns\nsns.set_palette(custom_palette)")
-    
+
     async def _prepare_init_prompt(self, input_data: dict) -> list[dict]:
         task = input_data['task']
         enable_chart = input_data['enable_chart']
@@ -140,26 +158,39 @@ class DataAnalyzer(BaseAgent):
                 target_language=target_language_name
             )
         return [{"role": "user", "content": prompt}]
-    
+
     async def _format_collect_data(self, analysis_task, collect_data_list):
         """
         Format collected datasets into a readable string for the prompt.
+
+        When the evidence pack exceeds the configured threshold, only the
+        sources relevant to this analysis task are shown. Data IDs keep their
+        positions in the full catalog, which stays available to the code
+        executor through ``get_existed_data(data_id)``.
         """
-        # search_result = await self.memory.retrieve_relevant_data(analysis_task, top_k=10, embedding_model=self.use_embedding_name)
-        # formatted_data = ""
-        # if len(search_result) > 0:
-        #     for idx,item in enumerate(search_result):
-        #         formatted_data += f"Data (id:{idx}):\n{collect_data_list[idx].brief_str()}\n\n"
-        # else:
-        #     for idx,item in enumerate(collect_data_list):
-        #         formatted_data += f"Data (id:{idx}):\n{item.brief_str()}\n\n"
+        selected_items = await select_evidence_by_task(
+            self.memory,
+            analysis_task,
+            collect_data_list,
+            model_name=self.use_llm_name,
+            config=self.config,
+        )
+        selected_ids = {id(item) for item in selected_items}
 
         formatted_data = ""
-        for idx,item in enumerate(collect_data_list):
+        for idx, item in enumerate(collect_data_list):
+            if id(item) not in selected_ids:
+                continue
             formatted_data += f"Data (id:{idx}):\n{item.brief_str()}\n\n"
-            
+
+        if len(selected_ids) < len(collect_data_list):
+            formatted_data += (
+                f"（本任务按相关性从 {len(collect_data_list)} 条证据中选取 {len(selected_ids)} 条。"
+                "如需未展示的证据，可用 `get_existed_data(data_id)` 按目录索引读取完整数据，"
+                "并在结论中保留来源编号或显式记录证据缺口。）\n"
+            )
         return formatted_data
-    
+
     async def _handle_report_action(self, action_content: str):
         """Handle a 'final' action from the LLM."""
         return {
@@ -168,11 +199,11 @@ class DataAnalyzer(BaseAgent):
             "result": action_content,
             "continue": False,
         }
-    
+
     async def _handle_max_round(self, conversation_history):
         conversation_history = [item["content"] for item in conversation_history]
         analysis_info = "\n\n".join(conversation_history)
-        
+
         # Get target language from config
         target_language = self.config.config.get('language', 'zh')
         language_mapping = {
@@ -180,7 +211,7 @@ class DataAnalyzer(BaseAgent):
             'en': 'English'
         }
         target_language_name = language_mapping.get(target_language, target_language)
-        
+
         if self.enable_chart:
             prompt = self.REPORT_DRAFT_PROMPT.format(
                 current_time = self.current_time,
@@ -210,9 +241,8 @@ class DataAnalyzer(BaseAgent):
         except Exception:
             final_result = response
         return {'coversation_history': conversation_history, 'final_result': final_result}
-    
+
     def _parse_generated_report(self, response: str):
-        basic_task = self.current_task_data['task']
         analysis_task = self.current_task_data['analysis_task']
         report_content = response
         report_title = f"{analysis_task}"
@@ -228,17 +258,17 @@ class DataAnalyzer(BaseAgent):
         except Exception:
             pass
         return report_title, report_content
-    
+
     async def _draw_chart(self, input_data, run_data: dict, max_iterations: int = 3):
         report_content = run_data["report_content"]
         analysis_task = input_data['analysis_task']
         chart_names = re.findall(r'@import\s+"(.*?)"', report_content)
         current_variables = self.code_executor.get_environment_info()
-        
+
         name_mapping = {}  # long chart name -> short filename
         name_description_mapping = {}  # long chart name -> description
         chart_code_mapping = {}  # long chart name -> code snippet
-        
+
         # Concurrency control semaphore
         charts_completed = set()
         # Load chart-stage checkpoint if available
@@ -259,7 +289,7 @@ class DataAnalyzer(BaseAgent):
                     task = analysis_task,
                     report_content = report_content,
                     chart_name = long_chart_name,
-                    current_variables = current_variables, 
+                    current_variables = current_variables,
                     max_iterations = max_iterations
                 )
                 name_mapping[long_chart_name] = new_chart_name
@@ -277,7 +307,7 @@ class DataAnalyzer(BaseAgent):
                     },
                     checkpoint_name='charts.pkl',
                 )
-        
+
         for long_chart_name, new_chart_name in name_mapping.items():
             chart_des = await self._generate_description(new_chart_name)
             name_description_mapping[long_chart_name] = chart_des
@@ -295,14 +325,14 @@ class DataAnalyzer(BaseAgent):
             )
 
         return chart_code_mapping, name_mapping, name_description_mapping
-    
-    
+
+
     async def _generate_description(self, chart_name: str) -> str:
         chart_name_path = os.path.join(self.image_save_dir, chart_name)
         image_b64 = image_to_base64(chart_name_path)
         if not image_b64:
             return ""
-        
+
         messages = [
             {"role": "user", "content": [
                 {"type": "text", "text": "Give a short description  as the caption of this chart, explaining the key data points and takeaways. Your response should be less than 100 words. Don't output any other words."},
@@ -313,39 +343,39 @@ class DataAnalyzer(BaseAgent):
             messages = messages
         )
         return response
-    
+
 
     async def _draw_single_chart(
-        self, 
+        self,
         task: str,
         report_content: str,
-        chart_name: str, 
+        chart_name: str,
         current_variables: str,
         max_iterations: int = 3
     ) -> str:
         """
         Run iterative “code generation → VLM critique” cycles for a single chart.
         """
-        
+
         init_prompt = self.DRAW_CHART_PROMPT.format(
             task=task,
             content=report_content,
             chart_name=chart_name,
-            data=current_variables       
+            data=current_variables
         )
-        
+
         conversation_history = [
             {"role": "user", "content": init_prompt}
         ]
-        
+
         last_successful_code = ""
         last_successful_chart_path = ""
         self.logger.info(f"Start drawing chart: {chart_name}")
-        
+
         # --- Main VLM evaluation loop ---
         for iteration in range(max_iterations):
             self.logger.info(f"Iteration {iteration + 1}")
-            
+
             # --- Phase 1: generate/execute code (up to 3 retries) ---
             chart_code, chart_filepath = await self._generate_and_execute_code(
                 conversation_history
@@ -365,7 +395,7 @@ class DataAnalyzer(BaseAgent):
             critic_response = await self.vlm.generate(
                 messages=[
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": [
                             {"type": "text", "text": self.VLM_CRITIQUE_PROMPT.format(
                                 task=task,
@@ -379,7 +409,7 @@ class DataAnalyzer(BaseAgent):
             self.logger.info("Image critic succeeded")
             if 'finish' in critic_response.lower():
                 return last_successful_code, os.path.basename(last_successful_chart_path)
-            
+
             conversation_history.append({"role": "assistant", "content": last_successful_code})
             feedback_for_llm = (
                 "The chart above was produced from your previous code. A visualization expert shared the critique below:\n\n"
@@ -426,11 +456,11 @@ class DataAnalyzer(BaseAgent):
                 self.logger.info(error_feedback)
                 conversation_history.append({"role": "user", "content": error_feedback})
                 continue  # retry
-            
+
             # Ensure the code saved a figure
             chart_filenames = re.findall(r"[\"']([^\"']+\.png)[\"']", action_content)
             if not chart_filenames:
-                conversation_history.append({"role": "assistant", "content": llm_response}) 
+                conversation_history.append({"role": "assistant", "content": llm_response})
                 feedback = "Your code ran but did not save a PNG. Please add `plt.savefig('filename.png')`."
                 self.logger.info(feedback)
                 conversation_history.append({"role": "user", "content": feedback})
@@ -438,7 +468,7 @@ class DataAnalyzer(BaseAgent):
 
             # Confirm the file exists
             potential_chart_name = os.path.basename(chart_filenames[0])
-            chart_filepath = os.path.join(self.image_save_dir, potential_chart_name) 
+            chart_filepath = os.path.join(self.image_save_dir, potential_chart_name)
 
             if not os.path.exists(chart_filepath):
                 conversation_history.append({"role": "assistant", "content": llm_response})
@@ -446,20 +476,20 @@ class DataAnalyzer(BaseAgent):
                 self.logger.info(feedback)
                 conversation_history.append({"role": "user", "content": feedback})
                 continue  # retry
-            
+
             return action_content, chart_filepath
 
         # Bail out after three failed attempts
         return None, None
-    
+
     def _get_persist_extra_state(self) -> Dict[str, Any]:
         return {'current_phase': self.current_phase}
     def _load_persist_extra_state(self, state: Dict[str, Any]):
         self.current_phase = state.get('current_phase', 'phase1')
-        
+
     async def async_run(
-        self, 
-        input_data: dict, 
+        self,
+        input_data: dict,
         max_iterations: int = 10,
         stop_words: list[str] = [],
         echo=False,
@@ -470,6 +500,8 @@ class DataAnalyzer(BaseAgent):
     ) -> dict:
         input_data['enable_chart'] = enable_chart
         self.enable_chart = enable_chart
+        if enable_chart and self.vlm is None:
+            raise ValueError("Chart generation requires a configured VLM model")
 
         if not resume:
             self.current_phase = 'phase1'
@@ -490,8 +522,9 @@ class DataAnalyzer(BaseAgent):
             run_result = self.current_checkpoint.get('phase1_result', {})
         try:
             final_result = run_result['final_result']
-        except:
-            self.logger.error(f"final_result: {final_result}")
+        except KeyError:
+            self.logger.error("DataAnalyzer result does not contain 'final_result'")
+            raise
         # Parse the generated analysis report
         if self.current_phase == 'phase2':
             report_title, report_content = self._parse_generated_report(final_result)
@@ -511,9 +544,9 @@ class DataAnalyzer(BaseAgent):
             # Clean up/checkpoint bookkeeping once finished
             self.current_phase = 'phase4'
             await self.save(state={
-                'current_phase': self.current_phase, 
-                'chart_code_mapping': chart_code_mapping, 
-                'chart_name_mapping': name_mapping, 
+                'current_phase': self.current_phase,
+                'chart_code_mapping': chart_code_mapping,
+                'chart_name_mapping': name_mapping,
                 'chart_name_description_mapping': name_description_mapping
             }, checkpoint_name=checkpoint_name)
         else:
@@ -525,7 +558,7 @@ class DataAnalyzer(BaseAgent):
         run_result['chart_code_mapping'] = chart_code_mapping
         run_result['chart_name_mapping'] = name_mapping
         run_result['chart_name_description_mapping'] = name_description_mapping
-        
+
         if self.current_phase == 'phase4':
             analysis_result = AnalysisResult(
                 title=report_title,
@@ -542,7 +575,7 @@ class DataAnalyzer(BaseAgent):
                 input_data=input_data,
                 output_data=analysis_result,
                 error=False,
-                note=f"Analysis result generated successfully"
+                note="Analysis result generated successfully"
             )
             self.current_phase = 'done'
             await self.save(state={'current_phase': self.current_phase, 'analysis_result': analysis_result, 'finished': True}, checkpoint_name=checkpoint_name)
@@ -552,12 +585,12 @@ class DataAnalyzer(BaseAgent):
 
 class AnalysisResult:
     def __init__(
-        self, 
-        title: str, 
-        content: str, 
+        self,
+        title: str,
+        content: str,
         image_save_dir: str,
-        chart_code_mapping: dict = None, 
-        chart_name_mapping: dict = None, 
+        chart_code_mapping: dict = None,
+        chart_name_mapping: dict = None,
         chart_name_description_mapping: dict = None
     ):
         self.title = title
@@ -566,7 +599,7 @@ class AnalysisResult:
         self.chart_code_mapping = chart_code_mapping
         self.chart_name_mapping = chart_name_mapping
         self.chart_name_description_mapping = chart_name_description_mapping
-    
+
     def __str__(self):
         # Replace placeholders with descriptive captions
         content = self._repalce_image_name()[1]
@@ -576,7 +609,7 @@ class AnalysisResult:
         # Replace placeholders with descriptive captions
         content = self._repalce_image_name()[1]
         return f"Report Title: {self.title}\nReport Content: {content[:300]}...(more content available)\n\n"
-    
+
     def _repalce_image_name(self):
         image_name_list = []
         report_content = self.content
@@ -592,6 +625,6 @@ class AnalysisResult:
                 )
                 image_name_list.append(new_img)
         return image_name_list, report_content
-    
+
     def get_all_img(self):
         return self._repalce_image_name()[0]

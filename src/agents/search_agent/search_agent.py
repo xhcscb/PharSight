@@ -26,6 +26,13 @@ class DeepSearchAgent(BaseAgent):
     ):
         # Use search + click tools directly; no code interpreter required
         if tools is None:
+            provider = str(
+                config.config.get('search_provider', 'serper')
+            ).strip().lower()
+            if provider != 'serper':
+                raise ValueError(
+                    f"Unsupported search_provider '{provider}'. Currently supported: serper"
+                )
             tools = [SerperSearch(), Click()]
         super().__init__(
             config=config,
@@ -103,18 +110,27 @@ class DeepSearchAgent(BaseAgent):
                     title = item.name
                     link = item.link
                     description = item.description
+                    provider_record = (
+                        item.data[0]
+                        if isinstance(item.data, list) and item.data
+                        and isinstance(item.data[0], dict)
+                        else {}
+                    )
+                    published_at = provider_record.get('published_at')
                     search_result_list.append({
                         'query': action_content,
                         'title': title,
                         'link': link,
-                        'description': description
+                        'description': description,
+                        'published_at': published_at,
                     })
                     self.link2name[link] = title
                     # Track this as a valid link for later validation
                     self.valid_links[link] = {
                         'title': title,
                         'description': description,
-                        'query': action_content
+                        'query': action_content,
+                        'published_at': published_at,
                     }
                     result += 'Result ' + str(idx + 1) + ':\n'
                     result += f"Title: {title}\n"
@@ -190,18 +206,51 @@ class DeepSearchAgent(BaseAgent):
             if len(click_result) == 0:
                 result = "Failed to fetch content for url: " + action_content
             else:
-                result = click_result[0].data
+                raw_content = str(click_result[0].data)
+                result = raw_content
                 # Track this as a used source with content summary
                 source_title = self.link2name.get(action_content, self.valid_links.get(action_content, {}).get('title', 'Unknown'))
                 self.used_sources[action_content] = {
                     'title': source_title,
-                    'content_preview': result[:500] if len(result) > 500 else result
+                    'content_preview': result[:500] if len(result) > 500 else result,
+                    'source_id': None,
                 }
-            # add to memory
-            if click_result[0].link in self.link2name:
-                click_result[0].name = self.link2name[click_result[0].link]
-            if not ('error' in click_result[0].name.lower()):
-                self.memory.add_data(click_result[0])
+                # Keep the raw click object for search-agent diagnostics.
+                if click_result[0].link in self.link2name:
+                    click_result[0].name = self.link2name[click_result[0].link]
+                if 'error' not in click_result[0].name.lower():
+                    self.memory.add_data(click_result[0])
+
+                target_type = self.config.config.get('target_type')
+                if target_type in {'pharma_company', 'pharma_industry'}:
+                    from src.tools.pharma import build_web_evidence
+
+                    source_meta = self.valid_links.get(action_content, {})
+                    evidence = build_web_evidence(
+                        url=action_content,
+                        title=source_title,
+                        content=raw_content,
+                        as_of=self.config.config['as_of'],
+                        published_at=source_meta.get('published_at'),
+                    )
+                    if evidence is None:
+                        result += (
+                            "\n\nThis page was not added to pharmaceutical evidence because "
+                            "its live retrieval/publication time exceeds the report cutoff."
+                        )
+                    else:
+                        existing_ids = {
+                            item.source_id
+                            for item in self.memory.get_collect_data()
+                            if item.source_id
+                        }
+                        if evidence.source_id not in existing_ids:
+                            self.memory.add_data(evidence)
+                        self.used_sources[action_content]['source_id'] = evidence.source_id
+                        result += (
+                            "\n\nCitable pharmaceutical evidence ID: "
+                            f"[Source:{evidence.source_id}]"
+                        )
             self.memory.add_log(
                 id = click_engine.id, 
                 type=click_engine.type,

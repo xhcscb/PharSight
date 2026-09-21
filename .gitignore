@@ -25,6 +25,8 @@ outputs/
 **/outputs/
 **/user_configs/
 **/agent_working/
+data/local/
+data/private/
 *.pkl
 
 # History and cache

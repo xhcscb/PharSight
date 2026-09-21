@@ -111,7 +111,7 @@ class BochaSearch(Tool):
 
     async def api_function(self, query: str) -> List[ToolResult]:
         """
-        Execute the legacy Bocha search via its HTTP endpoint.
+        Execute a Serper-backed Google search via its HTTP endpoint.
 
         Args:
             query: Search keywords.
@@ -166,11 +166,11 @@ class SerperSearch(Tool):
 
         self.backend = 'requests'
         self.type = 'tool_search'
-        api_key = os.getenv("SERPER_API_KEY", "")
-        if not api_key:
+        self.api_key = os.getenv("SERPER_API_KEY", "")
+        if not self.api_key:
             print("Warning: SERPER_API_KEY is not set; SerperSearch requests may fail.")
         self.headers = {
-            'X-API-KEY': api_key,
+            'X-API-KEY': self.api_key,
             'Content-Type': 'application/json'
         }
 
@@ -184,13 +184,19 @@ class SerperSearch(Tool):
         Returns:
             A list of ToolResult entries populated from the API payload.
         """
-        async with httpx.AsyncClient() as client:
+        if not self.api_key:
+            raise RuntimeError(
+                "SERPER_API_KEY is required when the Serper search provider is enabled"
+            )
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
             url = "https://google.serper.dev/search"
             payload = json.dumps({
                 "q": query,
             })
-            
+
             response = await client.post(url, headers=self.headers, data=payload)
+            response.raise_for_status()
             response_data = response.json()
             result = response_data.get('organic', [])
             if not result and 'error' in response_data:
@@ -199,16 +205,23 @@ class SerperSearch(Tool):
             result_list = []
             if len(result) > 0:
                 for item in result:
-                    
-                    title = item['title']
-                    link = item['link']
-                    description = item['snippet']
+                    title = item.get('title')
+                    link = item.get('link')
+                    if not title or not link:
+                        continue
+                    description = item.get('snippet', '')
+                    published_at = item.get('date')
                     result_list.append(SearchResult(
                         query=query,
                         name=title,
                         description=description,
                         link=link,
-                        data=[{'title': title, 'link': link, 'description': description}],
+                        data=[{
+                            'title': title,
+                            'link': link,
+                            'description': description,
+                            'published_at': published_at,
+                        }],
                         source=f'{title}\n{link}'
                         # source=f"Google Search Engine, https://google.serper.dev/search?q={query}"
                     ))

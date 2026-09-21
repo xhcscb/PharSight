@@ -1,49 +1,169 @@
-target_name: "中国金融智能体发展研究"
+# =============================================================================
+# Pharsight 医药行业研究（pharma_industry）—— 初始配置
+# =============================================================================
+# 依据：docs/v1/PHARMA_RESEARCH_WORKFLOW_AND_FINSIGHT_ADAPTATION.md
+#   §5   行业研究流程：从疾病与诊疗路径出发，而不是拼接多家公司报告
+#   §7.4 建议的配置契约：首跑关闭自动任务、实时搜索与图表
+#   §7.6 行业模式固定研究清单
+#
+# 默认口径（全覆盖）：
+#   1 个明确疾病/治疗领域；默认穷尽该领域全部已上市产品、在研管线和相关公司；
+#   中国内地辖区；标准治疗与在研管线并重；市场规模用权威口径 + 患者漏斗双重测算；
+#   输出无图表的中文 Markdown 行业报告。
+#
+# 运行前准备：
+#   1) 环境变量（写入 pharsight/.env，切勿提交）：
+#        DS_MODEL_NAME / DS_API_KEY / DS_BASE_URL     —— 主模型（必填）
+#   2) 复制本文件到 user_configs/pharma_industry.yaml（该目录已被 gitignore）
+#   3) 按 pharma_evidence_manifest.yaml 模板准备授权一手资料并填写 source_manifest
+#   4) python run_report.py --config user_configs/pharma_industry.yaml --no-resume
+#
+# 首跑不需要 Embedding、VLM、Serper 或浏览器，原因见下方开关注释。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 一、研究任务书：冻结行业边界、时间与问题（流程 §5.1）
+# -----------------------------------------------------------------------------
+
+# 研究对象：明确的细分行业、疾病领域或技术路线（示例，运行前请替换）
+target_name: "GLP-1 减重与降糖药物"
+
+# 行业模式不要求证券代码，保留空字符串
 stock_code: ""
-target_type: 'financial_industry'  # financial_company, macro, industry, general
-output_dir: "./outputs/exp-v3"
-language: 'zh' # zh,en
-reference_doc_path: 'src/template/report_template_yulan.docx' # used for docx style
-outline_template_path: 'src/template/industry_outline_zh.md' # used for outline style
 
+# 研究模式：pharma_company（上市公司）或 pharma_industry（行业）
+target_type: "pharma_industry"
+
+# 市场：A｜HK｜US，仅作标识；本项目优先 A/H
+market: "A/H"
+
+# 输出语言：zh｜en，医药研报默认中文
+language: "zh"
+
+# 信息截止时间：ISO-8601 且必须带时区；晚于该时间的资料不得进入当期结论
+as_of: "2026-09-21T23:59:59+08:00"
+
+# 监管与商业化辖区：中国内地；如覆盖海外市场，可追加 "US"、"EU"
+jurisdictions: ["CN"]
+
+# 行业模式一般不做单资产限定，保持空列表
+focus_assets: []
+
+# 行业关注范围：用适应症/疾病界定边界（示例，运行前请替换）
+focus_indications: ["2 型糖尿病", "肥胖症"]
+
+# 本次要回答的核心争议：行业报告结论必须回到这些问题
+research_questions:
+  - "当前标准治疗与未满足需求是什么？"
+  - "哪些技术路线、在研管线和政策事件可能改变行业价值分配？"
+  - "市场规模测算的口径差异和关键假设是什么？"
+
+# -----------------------------------------------------------------------------
+# 二、输出与模板
+# -----------------------------------------------------------------------------
+
+# 输出目录：必须位于 pharsight 仓库内；outputs/ 已被 gitignore，产物不入库
+output_dir: "./outputs/pharma-industry-v1"
+
+# 输出格式：首跑只验收 Markdown；docx/pdf 转换属环境相关的次级验收
+output_formats: ["md"]
+
+# 中文行业报告大纲模板（报告章节结构）
+outline_template_path: "src/template/pharma_industry_outline_zh.md"
+
+# DOCX 样式模板：仅当 output_formats 含 docx 时使用，Markdown 首跑可忽略
+reference_doc_path: "src/template/report_template_yulan.docx"
+
+# -----------------------------------------------------------------------------
+# 三、来源计划与工作流开关（流程 §7.4、§7.5）
+# -----------------------------------------------------------------------------
+
+# 受控资料包：指南、试验注册、监管与医保文件、权威统计、A/H 法定披露等。
+# 相对路径以 pharsight 仓库根目录解析；运行前该清单必须存在且至少含 1 条
+# 不晚于 as_of 的来源，否则流程按设计失败关闭。
+# 模板见 docs/example_configs/pharma_evidence_manifest.yaml。
+source_manifest: null
+
+# 关闭 LLM 自动扩展任务，只执行下方固定研究清单，保证首跑可复现
+auto_generate_tasks: true
+
+# 关闭实时搜索：首跑只用受控资料包，不依赖 Serper/浏览器
+live_web_search: true
+
+# 分析与写作阶段不联网；需要发现线索时再逐项打开
+live_web_search_in_analysis: true
+live_web_search_in_report: true
+
+# 严格截止时间：发布或更新时间晚于 as_of 的来源直接排除
+strict_cutoff: true
+
+# 严格引用：只允许 [Source:Sxxx] 形式，且必须解析到本次资料包中的来源
+strict_citations: true
+
+# 要求重大事实必须带引用；无引用报告不得发布
+require_citations: true
+
+# 任一采集/分析任务失败即中止，不静默降级
+fail_fast: true
+
+# 首跑关闭图表与 VLM 路径，先验证内容主流程
+enable_chart: false
+
+# 工具白名单：首跑只放开 pharma 受控证据工具；
+# 需要行业/宏观总量指标时改为 ["pharma", "industry", "macro"]，
+# 但此类结果不携带来源编号，重大数字仍须以资料包为准
+allowed_tool_categories: ["pharma"]
+
+# 按任务选择证据：证据条数超过阈值时，只把与当前分析/章节最相关的来源注入提示词，
+# 未展示的记录仍可在代码中按 data_id 读取。auto（默认）｜off（总是全量）｜llm（总是选择）
+evidence_selection: "auto"
+evidence_selection_threshold: 10   # auto 模式下证据超过该条数才启用选择
+evidence_selection_max_k: 12       # 单个分析/章节任务最多注入的来源数
+
+# 上下文保护：单条工具/代码结果超过上限时截断后再进入对话历史；
+# 历史超过上限时省略最早的工具结果，保留初始任务和最近交互。
+max_action_result_chars: 20000
+max_history_chars: 300000
+
+# 断点续跑缓存：输入、模型、代码和资料快照变化后请改用 --no-resume
+use_collect_data_cache: true
+use_analysis_cache: true
+use_report_outline_cache: true
+use_full_report_cache: true
+use_post_process_cache: true
+
+# -----------------------------------------------------------------------------
+# 四、固定采集任务（流程 §5 第 1–9 步 / §7.6 行业清单）
+# -----------------------------------------------------------------------------
 custom_collect_tasks:
-  - "中国政府关于'人工智能+'、'金融五篇大文章'及数字金融相关的最新政策文件与指导意见"
-  - "中国金融行业IT投入规模、AI解决方案市场规模及未来5年增长预测数据"
-  - "主流大模型厂商（如百度、阿里、腾讯、科大讯飞、蚂蚁等）发布的金融行业大模型参数及评测报告"
-  - "金融机构（银行、证券、保险）近期关于'AI智能体'、'大模型'、'数字员工'的招投标公告与中标信息"
-  - "金融智能体在典型场景（智能投研、智能信贷、智能客服、代码助手）的实际落地案例与应用效果数据"
-  - "行业内主要智能体厂商的产品白皮书、技术架构图及解决方案介绍资料"
-  - "关于AI Agent安全合规、数据隐私保护、算法伦理（如防幻觉、防注入）的行业标准或监管法规"
-  - "Github及技术社区中关于金融MCP（Model Context Protocol）、AgentOps及多智能体协作框架的讨论热度与技术文档"
+  - "收集疾病负担、诊断分层、治疗线次、患者可及性和未满足需求的一手统计与指南"
+  - "收集当前标准治疗、批准标签、疗效、安全性、价格和医保/集采信息"
+  - "穷尽该疾病/技术领域的全部已上市产品与在研管线，按靶点/技术路线、药物、适应症、地区和试验号建立清单"
+  - "收集监管、医保、集采和产业政策及其生效时间、适用范围与官方原文"
+  - "收集市场规模的权威统计口径，以及患者漏斗自下而上测算所需的全部输入"
+  - "穷尽该领域相关公司，收集产业链上中下游、主要参与者、A/H 上市公司业务暴露、财务与估值数据"
 
+# -----------------------------------------------------------------------------
+# 五、固定分析任务（流程 §5 第 2–12 步：来源事实、计算、假设与判断分离）
+# -----------------------------------------------------------------------------
 custom_analysis_tasks:
-  - "梳理中国金融智能体的发展历程，界定从'传统AI'到'大模型'再到'智能体'的技术演进路径与特征差异"
-  - "分析宏观政策（如金监总局数据安全办法）对智能体在金融核心业务场景落地的推动与制约作用"
-  - "构建金融智能体厂商竞争格局图谱，对比云厂商、AI创企、金融科技子公司及ISV厂商的核心优劣势"
-  - "深入剖析金融机构（甲方）的真实需求差异，对比国有大行、股份制银行与中小金融机构的采纳策略与付费意愿"
-  - "评估智能体在关键金融场景（营销、风控、投研、运营）的应用效能（ROI），分析从POC到规模化落地的难点"
-  - "探讨金融智能体的商业模式演变，分析从'软件交付'向'RaaS（结果即服务）'转型的可行性与挑战"
-  - "分析当前技术瓶颈（如复杂逻辑推理能力、幻觉控制、数据治理）对金融业务容错率的影响"
-  - "研判行业未来趋势，预测'智能体金融网络平台'及'人机共生金融服务'的演进时间表与形态"
+  - "界定行业边界与排除项，分析疾病负担、患者路径、标准治疗和未满足需求"
+  - "比较靶点、作用机制、技术路线、已上市产品和在研管线的证据等级与局限"
+  - "分析监管、医保和集采如何影响价格、可及性、放量和竞争格局"
+  - "用权威口径与患者漏斗双重测算市场规模，披露口径差异并给出情景假设"
+  - "分析产业链经济性、进入壁垒、竞争格局和利润分配"
+  - "比较 A/H 上市公司收入暴露、竞争力和估值，形成映射表"
+  - "整理行业催化剂与风险事件日历，明确证伪条件和传导路径"
+  - "形成行业结论：景气判断、结构机会和证伪条件，并标注证据缺口"
 
-use_collect_data_cache: True
-use_analysis_cache: True
-use_report_outline_cache: True
-use_full_report_cache: True
-use_post_process_cache: True
-
-# load in environment variables
+# -----------------------------------------------------------------------------
+# 六、模型配置：受控首跑只需要主模型；不要在配置中写明文密钥
+# -----------------------------------------------------------------------------
 llm_config_list:
-  - model_name: "${DS_MODEL_NAME}"
-    api_key: "${DS_API_KEY}"
-    base_url: "${DS_BASE_URL}"
+  - model_name: "${DS_MODEL_NAME}"   # 主模型（环境变量）
+    api_key: "${DS_API_KEY}"         # API Key（环境变量，禁止提交）
+    base_url: "${DS_BASE_URL}"       # 兼容 OpenAI 协议的接口地址
     generation_params:
-      temperature: 0.7
+      temperature: 0.3               # 低温以保持事实一致性和可复现性
       max_tokens: 32768
       top_p: 0.95
-  - model_name: "${EMBEDDING_MODEL_NAME}"
-    api_key: "${EMBEDDING_API_KEY}"
-    base_url: "${EMBEDDING_BASE_URL}"
-  - model_name: "${VLM_MODEL_NAME}"
-    api_key: "${VLM_API_KEY}"
-    base_url: "${VLM_BASE_URL}"

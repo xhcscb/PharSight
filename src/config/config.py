@@ -1,31 +1,48 @@
 import json
 import os
 import re
+from copy import deepcopy
+from datetime import datetime
+from pathlib import Path
+
 import yaml
-from src.utils import AsyncLLM
+
+PHARMA_TARGET_TYPES = {"pharma_company", "pharma_industry"}
+SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?:api[_-]?key|token|secret|password|credential|authorization|cookie|bearer)",
+    re.IGNORECASE,
+)
+
 
 class Config:
-    def __init__(self, config_file_path=None, config_dict={}):
+    def __init__(self, config_file_path=None, config_dict=None):
         # load default config
         current_path = os.path.dirname(os.path.realpath(__file__))
         default_file_path = os.path.join(current_path, "default_config.yaml")
         self.config = self._load_config(default_file_path)
+        self.project_root = Path(current_path).resolve().parents[1]
 
         # load from file
         self.config_file_path = config_file_path
         if config_file_path is not None:
             file_config = self._load_config(config_file_path)
             self.config.update(file_config)
-        
+
         # load from dict
-        self.config.update(config_dict)
-        
+        self.config.update(config_dict or {})
+        self.config = self._replace_env_vars(self.config)
+
+        self._validate_live_search_config()
+        self._validate_research_config()
+        self._normalize_project_paths()
         self._set_dirs()
         self._set_llms()
         self._set_rate_limiter()
 
-    
+
     def _load_config(self, config_file_path):
+        config_file_path = os.fspath(config_file_path)
+
         def build_yaml_loader():
             loader = yaml.FullLoader
             loader.add_implicit_resolver(
@@ -43,29 +60,7 @@ class Config:
                 list("-+0123456789."),
             )
             return loader
-    
-        def replace_env_vars(obj):
-            """Recursively replace ${VAR_NAME} with environment variables"""
-            if isinstance(obj, dict):
-                return {key: replace_env_vars(value) for key, value in obj.items()}
-            elif isinstance(obj, list):
-                return [replace_env_vars(item) for item in obj]
-            elif isinstance(obj, str):
-                # Match ${VAR_NAME} pattern
-                pattern = r'\$\{([^}]+)\}'
-                matches = re.findall(pattern, obj)
-                if matches:
-                    result = obj
-                    for var_name in matches:
-                        env_value = os.getenv(var_name)
-                        if env_value is None:
-                            raise ValueError(f"Environment variable '{var_name}' is not set")
-                        result = result.replace(f"${{{var_name}}}", env_value)
-                    return result
-                return obj
-            else:
-                return obj
-    
+
         yaml_loader = build_yaml_loader()
         file_config = dict()
         if os.path.exists(config_file_path):
@@ -79,30 +74,182 @@ class Config:
                 raise ValueError(f"Unsupported file type: {config_file_path}")
         else:
             raise ValueError(f"Config file not found: {config_file_path}")
-        
-        # Replace environment variables in the loaded config
-        file_config = replace_env_vars(file_config)
+
         return file_config
-    
-    
-    
+
+    @staticmethod
+    def _replace_env_vars(obj):
+        """Replace ``${VAR_NAME}`` after all configuration layers are merged."""
+        if isinstance(obj, dict):
+            return {key: Config._replace_env_vars(value) for key, value in obj.items()}
+        if isinstance(obj, list):
+            return [Config._replace_env_vars(item) for item in obj]
+        if not isinstance(obj, str):
+            return obj
+
+        result = obj
+        for var_name in re.findall(r'\$\{([^}]+)\}', obj):
+            env_value = os.getenv(var_name)
+            if env_value is None:
+                raise ValueError(f"Environment variable '{var_name}' is not set")
+            result = result.replace(f"${{{var_name}}}", env_value)
+        return result
+
+
+
+    def _validate_research_config(self):
+        """Validate the additional contract used by pharmaceutical modes."""
+        target_type = self.config.get("target_type", "general")
+        if target_type not in PHARMA_TARGET_TYPES:
+            return
+
+        required = ["target_name", "as_of", "jurisdictions", "research_questions"]
+        if target_type == "pharma_company":
+            required.append("stock_code")
+        missing = [key for key in required if not self.config.get(key)]
+        if missing:
+            raise ValueError(
+                f"{target_type} configuration is missing required fields: "
+                + ", ".join(missing)
+            )
+
+        as_of = str(self.config["as_of"])
+        try:
+            parsed_as_of = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                "'as_of' must be an ISO-8601 timestamp, for example "
+                "2026-09-21T18:00:00+08:00"
+            ) from exc
+        if parsed_as_of.tzinfo is None:
+            raise ValueError("'as_of' must include an explicit timezone")
+
+        for control in ("strict_cutoff", "strict_citations", "require_citations"):
+            if self.config.get(control, True) is not True:
+                raise ValueError(f"'{control}' must be true for pharmaceutical modes")
+
+        for key in ("jurisdictions", "research_questions"):
+            value = self.config[key]
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                raise ValueError(f"'{key}' must be a non-empty list of strings")
+
+        for key in ("custom_collect_tasks", "custom_analysis_tasks"):
+            value = self.config.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"'{key}' must be a list of strings")
+
+        output_formats = self.config.get("output_formats", ["md"])
+        if not isinstance(output_formats, list) or not output_formats:
+            raise ValueError("'output_formats' must be a non-empty list")
+        unsupported = set(output_formats) - {"md", "docx", "pdf"}
+        if unsupported:
+            raise ValueError(
+                "Unsupported output formats: " + ", ".join(sorted(unsupported))
+            )
+
+        selection_mode = str(self.config.get("evidence_selection", "auto")).strip().lower()
+        if selection_mode not in {"auto", "off", "llm"}:
+            raise ValueError("'evidence_selection' must be one of: auto, off, llm")
+        for key in ("evidence_selection_threshold", "evidence_selection_max_k"):
+            value = self.config.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, bool):
+                raise ValueError(f"'{key}' must be a positive integer")
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"'{key}' must be a positive integer") from exc
+            if parsed < 1:
+                raise ValueError(f"'{key}' must be a positive integer")
+
+    def _validate_live_search_config(self):
+        """Validate the explicitly enabled live-search provider."""
+        if not self.config.get("live_web_search", False):
+            return
+        provider = str(self.config.get("search_provider", "serper")).strip().lower()
+        if provider != "serper":
+            raise ValueError(
+                f"Unsupported search_provider '{provider}'. Currently supported: serper"
+            )
+        self.config["search_provider"] = provider
+        if not os.getenv("SERPER_API_KEY"):
+            raise ValueError(
+                "SERPER_API_KEY is required when live_web_search uses Serper"
+            )
+
+    def _normalize_project_paths(self):
+        """Resolve project-owned paths relative to the Pharsight repository."""
+        for key in (
+            "output_dir",
+            "reference_doc_path",
+            "outline_template_path",
+            "source_manifest",
+        ):
+            raw_value = self.config.get(key)
+            if not raw_value:
+                continue
+            path = Path(raw_value)
+            if not path.is_absolute():
+                path = self.project_root / path
+            self.config[key] = str(path.resolve())
+
+    @staticmethod
+    def redacted_copy(value):
+        """Return a recursively redacted copy suitable for logs and snapshots."""
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                if SENSITIVE_KEY_PATTERN.search(str(key)):
+                    redacted[key] = "***REDACTED***"
+                else:
+                    redacted[key] = Config.redacted_copy(item)
+            return redacted
+        if isinstance(value, list):
+            return [Config.redacted_copy(item) for item in value]
+        return deepcopy(value)
+
     def _set_dirs(self):
-        # convert output dir to absolute path
-        output_dir = self.config.get('output_dir', './outputs')
-        self.config['output_dir'] = output_dir
-        target = self.config.get('target_name', 'unknown')
+        output_dir = Path(self.config.get("output_dir", self.project_root / "outputs")).resolve()
+        try:
+            output_dir.relative_to(self.project_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"output_dir must stay inside the Pharsight repository: {output_dir}"
+            ) from exc
+        self.config['output_dir'] = str(output_dir)
+        target = str(self.config.get('target_name', 'unknown'))
         save_note = self.config.get('save_note', None)
-        target = target[:50]
         if save_note:
             target = str(save_note) + '_' + target
-        self.working_dir = os.path.join(output_dir, target)
+        target = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', target)[:80].strip(' .')
+        target = target or 'unknown'
+        working_dir = (output_dir / target).resolve()
+        try:
+            working_dir.relative_to(self.project_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"working_dir must stay inside the Pharsight repository: {working_dir}"
+            ) from exc
+        self.working_dir = str(working_dir)
         self.config['working_dir'] = self.working_dir
         os.makedirs(self.working_dir, exist_ok=True)
         with open(os.path.join(self.working_dir, 'config.json'), 'w', encoding='utf-8') as f:
-            json.dump(self.config, f, indent=4, ensure_ascii=False)
-        
-    
+            json.dump(self.redacted_copy(self.config), f, indent=4, ensure_ascii=False)
+
+
     def _set_llms(self):
+        try:
+            from src.utils.llm import AsyncLLM
+        except ModuleNotFoundError as exc:
+            if exc.name == "openai":
+                raise RuntimeError(
+                    "The 'openai' package is required to configure language models. "
+                    "Install the Pharsight project dependencies first."
+                ) from exc
+            raise
         llm_config_list = self.config.get('llm_config_list', [])
         llm_dict = {}
         for llm_config in llm_config_list:
@@ -115,7 +262,7 @@ class Config:
             )
             llm_dict[model_name] = llm
         self.llm_dict = llm_dict
-            
+
     def _set_rate_limiter(self):
         """Initialize the global rate limiter from config."""
         from src.utils.rate_limiter import RateLimiter

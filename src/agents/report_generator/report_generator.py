@@ -1,19 +1,32 @@
-from typing import List, Dict, Any, Tuple
-import asyncio
+import copy
 import os
 import re
-import copy
 import subprocess
+from typing import Any, Dict
+
 import numpy as np
-import docx2pdf
+
 from src.agents.base_agent import BaseAgent
-from src.agents import DeepSearchAgent
-from src.tools.web.web_crawler import ClickResult
-from src.tools import ToolResult, get_tool_categories, get_tool_by_name
 from src.agents.report_generator.report_class import Report, Section
+from src.utils.evidence_selection import select_analyses_by_task, select_evidence_by_task
+from src.utils.figure_helper import draw_kline_chart
 from src.utils.helper import extract_markdown, get_md_img
 from src.utils.index_builder import IndexBuilder
-from src.utils.figure_helper import draw_kline_chart
+from src.utils.report_validation import (
+    PHARMA_DISCLOSURE,
+    extract_source_ids,
+    validate_source_citations,
+)
+
+try:
+    from src.tools.web.web_crawler import ClickResult
+except ModuleNotFoundError:
+    class ClickResult:  # type: ignore[no-redef]
+        """Fallback marker when optional crawler dependencies are absent."""
+
+        pass
+
+
 class ReportGenerator(BaseAgent):
     AGENT_NAME = 'report_generator'
     AGENT_DESCRIPTION = 'a agent that can generate report from the data'
@@ -38,7 +51,7 @@ class ReportGenerator(BaseAgent):
         )
         # Load prompts based on language and target type settings
         from src.utils.prompt_loader import get_prompt_loader
-        
+
         target_language = self.config.config.get('language', 'zh')
         language_mapping = {
             'zh': 'Chinese (中文)',
@@ -47,30 +60,30 @@ class ReportGenerator(BaseAgent):
         target_language_name = language_mapping.get(target_language, target_language)
         self.target_language_name = target_language_name
         target_type = self.config.config.get('target_type', 'general')
-        
-        
+
+
         # Load prompts using the new YAML-based loader
         self.prompt_loader = get_prompt_loader('report_generator', report_type=target_type)
-        
+
         # Store prompts as instance attributes for easy access
         self.SECTION_WRITING_PROMPT = self.prompt_loader.get_prompt('section_writing')
         self.SECTION_WRITING_WO_CHART_PROMPT = self.prompt_loader.get_prompt('section_writing_wo_chart')
         self.FINAL_POLISH_PROMPT = self.prompt_loader.get_prompt('final_polish')
-        
+
         # For general reports, use outline_draft; for financial, use outline_draft as well
         # (both YAML files have 'outline_draft' key)
         self.DRAFT_GENERATOR_PROMPT = self.prompt_loader.get_prompt('outline_draft')
-        
+
         self.CRITIQUE_PROMPT = self.prompt_loader.get_prompt('outline_critique')
         self.REFINEMENT_PROMPT = self.prompt_loader.get_prompt('outline_refinement')
-        
+
         # used for adding abstract and title
         self.TITLE_PROMPT = self.prompt_loader.get_prompt('title_generation')
         self.ABSTRACT_PROMPT = self.prompt_loader.get_prompt('abstract')
 
         # used for cover page
         self.TABLE_BEAUTIFY_PROMPT = self.prompt_loader.get_prompt('table_beautify')
-        
+
         self.use_embedding_name = use_embedding_name
         # Phase checkpoints: outline → sections → post_process
         self._phase: str = 'outline'
@@ -78,19 +91,33 @@ class ReportGenerator(BaseAgent):
         self._section_index_done: int = 0
         # Post-process sub-stages: 0-image, 1-abstract/title, 2-cover, 3-reference, 4-render
         self._post_stage: int = 0
-        
+
 
     def _set_default_tools(self):
         """
         Attach the default tools/agents required by the report generator.
         """
         tool_list = []
-        # Attach the deep-search agent (sharing the same memory)
-        tool_list.append(DeepSearchAgent(config=self.config, use_llm_name=self.use_llm_name, memory=self.memory))
-        for tool in tool_list:
-            self.memory.add_dependency(tool.id, self.id)
+        if (
+            self.config.config.get('live_web_search', True)
+            and self.config.config.get('live_web_search_in_report', False)
+        ):
+            try:
+                from src.agents.search_agent.search_agent import DeepSearchAgent
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Live web search requires optional web dependencies. "
+                    "Install them or set live_web_search: false."
+                ) from exc
+            tool_list.append(
+                DeepSearchAgent(
+                    config=self.config,
+                    use_llm_name=self.use_llm_name,
+                    memory=self.memory,
+                )
+            )
         self.tools = tool_list
-    
+
     async def _prepare_executor(self):
         """
         Prepare the code executor with data access functions for section writing.
@@ -99,14 +126,14 @@ class ReportGenerator(BaseAgent):
         tool_list = self.tools
         collect_data_list = self.memory.get_collect_data(exclude_type=['search', 'click'])
         analysis_result_list = self.memory.get_analysis_result()
-        
+
         def _get_data(data_id: int):
             """Get dataset by index"""
             if 0 <= data_id < len(collect_data_list):
                 return collect_data_list[data_id].data
             else:
                 raise ValueError(f"Invalid data_id: {data_id}. Available range: 0-{len(collect_data_list)-1}")
-        
+
         def _get_analysis_result(data_id: int):
             """Get analysis results matching the query"""
             # Use LLM-based selection to find relevant analysis results
@@ -114,13 +141,17 @@ class ReportGenerator(BaseAgent):
                 return str(analysis_result_list[data_id])[:3000]
             else:
                 raise ValueError(f"Invalid data_id: {data_id}. Available range: 0-{len(analysis_result_list)-1}")
-        
+
         def _get_deepsearch_result(query: str):
             """Call deep search agent.
 
             Uses the async bridge to avoid the asyncio.run() deadlock when
             called from inside exec()'d code within a running event loop.
             """
+            if not tool_list:
+                raise RuntimeError(
+                    "Live web search is disabled for this run. Use approved collected evidence."
+                )
             from src.utils.async_bridge import get_async_bridge
             bridge = get_async_bridge()
             ds_agent = tool_list[0]
@@ -129,34 +160,64 @@ class ReportGenerator(BaseAgent):
                 'query': query
             }))
             return output['final_result']
-        
+
         self.code_executor.set_variable("get_data", _get_data)
         self.code_executor.set_variable("get_analysis_result", _get_analysis_result)
         self.code_executor.set_variable("get_data_from_deep_search", _get_deepsearch_result)
-        
-    
+
+
     async def _prepare_init_prompt(self, input_data: dict) -> list[dict]:
         task = input_data.get('task')
         section_outline = input_data.get('section_outline')
         max_iterations = input_data.get('max_iterations', 10)
         if not task:
             raise ValueError("Input data must contain a 'task' key.")
-        
+
         # Get data API description from prompts
         data_api_description = self.prompt_loader.get_prompt('data_api')
-        
-        # Prepare data information for the agent
+
+        # Prepare data information for the agent. When the catalog is large,
+        # only section-relevant records are shown; data IDs keep their
+        # positions in the full catalog, which stays reachable in code.
         collect_data_list = self.memory.get_collect_data(exclude_type=['search', 'click'])
         analysis_result_list = self.memory.get_analysis_result()
+        section_query = f"{task}\n{section_outline}" if section_outline else task
+        selected_collect_data = await select_evidence_by_task(
+            self.memory,
+            section_query,
+            collect_data_list,
+            model_name=self.use_llm_name,
+            config=self.config,
+        )
+        selected_analysis_results = await select_analyses_by_task(
+            self.memory,
+            section_query,
+            analysis_result_list,
+            model_name=self.use_llm_name,
+            config=self.config,
+        )
+        selected_data_ids = {id(item) for item in selected_collect_data}
+        selected_analysis_ids = {id(item) for item in selected_analysis_results}
+
         data_info = "\n\n## Available Datas\n\n"
         for idx, item in enumerate(collect_data_list):
+            if id(item) not in selected_data_ids:
+                continue
             data_info += f"**Data ID {idx}:**\n{item.brief_str()}\n\n"
         data_info += "\nYou can access these datasets using `get_data(data_id)` in your code.\n"
         data_info += "\n\n## Available Analysis Reports\n\n"
         for idx, item in enumerate(analysis_result_list):
+            if id(item) not in selected_analysis_ids:
+                continue
             data_info += f"**Analysis Report ID {idx}:**\n{item.brief_str()}\n\n"
         data_info += "\nYou can access these analysis reports using `get_analysis_result(analysis_result_id)` in your code.\n"
-        
+        if len(selected_data_ids) < len(collect_data_list) or len(selected_analysis_ids) < len(analysis_result_list):
+            data_info += (
+                "\n注意：以上为按章节相关性筛选后的证据与分析，未展示的记录仍可通过 "
+                "`get_data(data_id)` / `get_analysis_result(analysis_id)` 读取。"
+                "若章节所需证据缺失，必须显式记录证据缺口，不得虚构。\n"
+            )
+
         if self.enable_chart:
             return [{
                 "role": "user",
@@ -185,6 +246,13 @@ class ReportGenerator(BaseAgent):
             }]
 
     async def _handle_search_action(self, action_content: str):
+        if not self.tools:
+            return {
+                'action': 'search',
+                'action_content': action_content,
+                'result': 'Live web search is disabled. Use the approved evidence pack.',
+                'continue': True,
+            }
         search_result = await self.tools[0].async_run(input_data={'query': action_content})
         return {
             'action': 'search',
@@ -192,7 +260,7 @@ class ReportGenerator(BaseAgent):
             'result': search_result['final_result'],
             'continue': True,
         }
-    
+
     async def _handle_report_action(self, action_content: str):
         """Handle a 'final/report' action."""
         return {
@@ -209,7 +277,7 @@ class ReportGenerator(BaseAgent):
             "result": action_content,
             "continue": False,
         }
-    
+
     async def _handle_draft_action(self, action_content: str):
         """Handle a 'outline' action."""
         return {
@@ -218,25 +286,25 @@ class ReportGenerator(BaseAgent):
             "result": action_content,
             "continue": False,
         }
-    
+
     async def _final_polish(self, section_input_data, draft_section: str):
         all_analysis_result = self.memory.get_analysis_result()
         all_image_list = []
         for analysis_result in all_analysis_result:
             all_image_list.extend(analysis_result.get_all_img())
         reference_image = '\n'.join(all_image_list)
-        
+
         final_prompt = self.FINAL_POLISH_PROMPT.format(
             draft_report = draft_section,
             reference_image = reference_image,
             target_language = self.target_language_name
         )
-        
+
         final_message = [{"role": "user", "content": final_prompt}]
         output = await self.llm.generate(messages = final_message)
         final_section = extract_markdown(output)
         return final_section
-    
+
     async def _replace_image_path(self, report):
         """
         Replace placeholder image references in the report with actual local paths.
@@ -251,7 +319,7 @@ class ReportGenerator(BaseAgent):
                     section_new_content.append(p_paragraph)
                 section._content = section_new_content
             return report
-        
+
         def remove_suffix(name: str):
             return name.replace(".png", "").replace(".jpg", "").replace(".jpeg", "").replace(".md", "")
         def is_image_file(name: str):
@@ -261,7 +329,7 @@ class ReportGenerator(BaseAgent):
         img_paths = []
         for analysis_result in all_analysis_result:
             short2long = {}
-            img_dicts = {} # caption: abs_path 
+            img_dicts = {} # caption: abs_path
             chart_name_mapping = analysis_result.chart_name_mapping
             for long_name, short_name in chart_name_mapping.items():
                 short2long[remove_suffix(short_name)] = remove_suffix(long_name)
@@ -309,7 +377,7 @@ class ReportGenerator(BaseAgent):
                         most_similar_idx = (await index.search(img_name))[0]['id']
                         detect_img_name = img_captions[most_similar_idx]
                         detect_img_path = img_paths[most_similar_idx]
-                        
+
                         if len(img_captions) == 1:
                             # No images left to map
                             self.logger.warning("Available images are exhausted; stop replacing images.")
@@ -330,7 +398,7 @@ class ReportGenerator(BaseAgent):
             section._content = section_new_content
         return report
 
-    
+
     async def _add_abstract(self, input_data, report):
         """
         Add an abstract and update the title.
@@ -348,7 +416,7 @@ class ReportGenerator(BaseAgent):
         ])
         response_content = extract_markdown(response_content)
         report.abstract = response_content
-        
+
         new_title = await self.llm.generate(
             messages = [
             {
@@ -363,7 +431,36 @@ class ReportGenerator(BaseAgent):
 
     async def _add_cover_page(self, input_data, report):
         pipeline_type = input_data.get('target_type', 'company')
-        if pipeline_type != 'company':
+        if pipeline_type in {'pharma_company', 'pharma_industry'}:
+            config = self.config.config
+            default_assets = (
+                '全部已上市产品与在研管线'
+                if pipeline_type == 'pharma_company'
+                else '未限定'
+            )
+            scope_rows = [
+                ("研究对象", config.get('target_name', '')),
+                ("证券代码", config.get('stock_code') or '不适用'),
+                ("研究模式", pipeline_type),
+                ("信息截止时间", config.get('as_of', '')),
+                ("司法辖区", '、'.join(config.get('jurisdictions', []))),
+                ("重点资产", '、'.join(config.get('focus_assets', [])) or default_assets),
+                ("重点适应症", '、'.join(config.get('focus_indications', [])) or '未限定'),
+            ]
+            output_str = "## 研究范围与截止时间\n\n| 项目 | 内容 |\n| --- | --- |\n"
+            for label, value in scope_rows:
+                safe_value = str(value).replace('|', '\\|').replace('\n', ' ')
+                output_str += f"| {label} | {safe_value} |\n"
+            output_str += (
+                "\n本报告仅采用截止时间内、具备稳定来源编号的证据；"
+                "缺失、冲突和模型假设应在相应章节显式披露。\n"
+            )
+            scope_section = Section('研究范围与截止时间', output_str)
+            scope_section.set_content(output_str)
+            report.sections = [scope_section] + report.sections
+            return report
+
+        if pipeline_type not in {'company', 'financial_company', 'pharma_company'}:
             return report
         stock_code = input_data.get('stock_code', '')
         if stock_code == "":
@@ -388,7 +485,7 @@ class ReportGenerator(BaseAgent):
                 if table_data is None:
                     print(f"{display_name} data is empty, skip formatting")
                     continue
-                    
+
                 if keyword in ["Income statement", "Balance sheet", "Cash-flow statement"]:
                     if 'Category' in table_data.columns:
                         table_data.rename(columns={'Category': 'Line item (RMB mn)'}, inplace=True)
@@ -402,9 +499,9 @@ class ReportGenerator(BaseAgent):
 
                 output_str += f'\n\n### {display_name}\n\n'
                 output_str += table_string
-                
+
                 output_str += '\n\n'
-        
+
         # Render stock-price chart
         try:
             self.logger.info("Rendering stock-price chart for cover page")
@@ -422,7 +519,7 @@ class ReportGenerator(BaseAgent):
                         if '\u6536\u76d8' in kline_data.columns:
                             kline_data.rename(columns={'\u6536\u76d8': 'close'}, inplace=True)
                     fig_path = draw_kline_chart(kline_data, self.working_dir)
-                    output_str += f'\n\n### Share Price Trend\n\n'
+                    output_str += '\n\n### Share Price Trend\n\n'
                     output_str += f'![Trailing price performance]({fig_path})\n\n'
         except Exception as e:
             self.logger.error(f"Failed to draw price trend: {e}", exc_info=True)
@@ -433,13 +530,59 @@ class ReportGenerator(BaseAgent):
         report.sections = [first_section] + report.sections
 
         return report
-    
+
 
     async def _add_reference(self, report):
         """
         Append the reference-data section and replace placeholder citations.
         """
         collect_data_list = self.memory.get_collect_data() # only use data, without analysis result
+        strict_citations = self.config.config.get('strict_citations', False)
+
+        if strict_citations:
+            source_by_id = {
+                item.source_id: item for item in collect_data_list if item.source_id
+            }
+            validation = validate_source_citations(
+                report.content,
+                source_by_id,
+                require_any=self.config.config.get('require_citations', True),
+            )
+            citation_numbers = {
+                source_id: index
+                for index, source_id in enumerate(
+                    sorted(validation.cited_source_ids), start=1
+                )
+            }
+
+            for section in report.sections:
+                section_new_content = []
+                for paragraph in section._content:
+                    def replace_structured_reference(match):
+                        ids = extract_source_ids(match.group(1))
+                        numbers = [str(citation_numbers[source_id]) for source_id in ids]
+                        return f"[{','.join(numbers)}]"
+
+                    paragraph = re.sub(
+                        r'\[[Ss]ource[：:]\s*([^\]]+)\]',
+                        replace_structured_reference,
+                        paragraph,
+                    )
+                    section_new_content.append(paragraph)
+                section._content = section_new_content
+
+            reference_title = (
+                '参考资料' if self.target_language_name.startswith('Chinese')
+                else 'Reference Data Sources'
+            )
+            reference_str = f"## {reference_title}\n\n"
+            for source_id, number in citation_numbers.items():
+                reference_str += f"{number}. {source_by_id[source_id].reference_text()}\n"
+            new_section = Section(reference_title, reference_str)
+            new_section.set_content(reference_str)
+            report.sections.append(new_section)
+            return report
+
         all_data = []
         for item in collect_data_list:
             # TODO: directly set these keys in ToolResult
@@ -457,10 +600,10 @@ class ReportGenerator(BaseAgent):
             if content not in [ii['content'] for ii in all_data]:
                 all_data.append({
                     'name': name,
-                    'content': content 
+                    'content': content
                 })
         self.logger.info(f"Total data for reference: {len(all_data)}")
-        
+
         total_corpus = [item['name'] for item in all_data]
         index = IndexBuilder(config=self.config, embedding_model=self.use_embedding_name, working_dir=self.working_dir)
         await index._build_index(total_corpus)
@@ -522,7 +665,24 @@ class ReportGenerator(BaseAgent):
         report.sections.append(new_section)
         return report
 
-        
+    def _ensure_pharma_disclosure(self, report):
+        target_type = self.config.config.get('target_type', 'general')
+        if target_type not in {'pharma_company', 'pharma_industry'}:
+            return report
+        if PHARMA_DISCLOSURE in report.content:
+            return report
+        disclosure_str = f"## 重要声明\n\n{PHARMA_DISCLOSURE}"
+        disclosure = Section('重要声明', disclosure_str)
+        disclosure.set_content(disclosure_str)
+        report.sections.append(disclosure)
+        return report
+
+    @staticmethod
+    def _safe_filename(value: str) -> str:
+        cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', value).strip().rstrip('.')
+        return cleaned[:120] or 'pharsight_report'
+
+
 
     async def post_process_report(self, input_data, report):
         """
@@ -591,6 +751,7 @@ class ReportGenerator(BaseAgent):
                 report = await self._add_reference(report)
             else:
                 self.logger.info("[Phase2] Step 3: skipping reference section (add_reference_section=False)")
+            report = self._ensure_pharma_disclosure(report)
             self._post_stage = 4
             current_state['report_obj_stage4'] = copy.deepcopy(report)
             current_state['report_obj'] = report
@@ -600,34 +761,49 @@ class ReportGenerator(BaseAgent):
 
         # 4 Render to docx
         if self._post_stage <= 4:
-            self.logger.info("[Phase2] Step 4: render report to docx")
+            self.logger.info("[Phase2] Step 4: render configured report formats")
             working_dir = self.config.config['working_dir']
-            md_path = os.path.join(working_dir, f'{report.title}.md')
-            docx_path = os.path.join(working_dir, f'{report.title}.docx')
+            safe_title = self._safe_filename(report.title)
+            md_path = os.path.join(working_dir, f'{safe_title}.md')
+            docx_path = os.path.join(working_dir, f'{safe_title}.docx')
             content = report.content
             content = content.replace("```markdown", "").replace("```", "")
             with open(md_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            media_dir = os.path.join(working_dir, "media")
-            reference_doc = self.config.config['reference_doc_path']
-            pandoc_cmd = [
-                "pandoc",
-                md_path,
-                "-o",
-                docx_path,
-                "--standalone",
-                "--toc",
-                "--toc-depth=3",
-                f"--resource-path={working_dir}",
-                f"--reference-doc={reference_doc}"
-            ]
-            if os.path.exists(media_dir):
-                pandoc_cmd.append(f"--extract-media={media_dir}")
-            print(" ".join(pandoc_cmd))
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
-            subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True, encoding='utf-8', env=env)
-            
+            output_formats = set(
+                self.config.config.get('output_formats', ['md', 'docx', 'pdf'])
+            )
+            rendered_docx = None
+            rendered_pdf = None
+            if {'docx', 'pdf'} & output_formats:
+                media_dir = os.path.join(working_dir, "media")
+                reference_doc = self.config.config['reference_doc_path']
+                pandoc_cmd = [
+                    "pandoc",
+                    md_path,
+                    "-o",
+                    docx_path,
+                    "--standalone",
+                    "--toc",
+                    "--toc-depth=3",
+                    f"--resource-path={working_dir}",
+                    f"--reference-doc={reference_doc}"
+                ]
+                if os.path.exists(media_dir):
+                    pandoc_cmd.append(f"--extract-media={media_dir}")
+                print(" ".join(pandoc_cmd))
+                env = os.environ.copy()
+                env['PYTHONIOENCODING'] = 'utf-8'
+                subprocess.run(
+                    pandoc_cmd,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    env=env,
+                )
+                rendered_docx = docx_path
+
             # Validate output is non-empty
             if not os.path.exists(md_path) or os.path.getsize(md_path) == 0:
                 self.logger.error(
@@ -636,17 +812,22 @@ class ReportGenerator(BaseAgent):
                     "Check section generation logs for errors."
                 )
 
-            pdf_path = docx_path.replace(".docx", ".pdf")
-            try:
+            if 'pdf' in output_formats:
+                import docx2pdf
+
+                pdf_path = docx_path.replace(".docx", ".pdf")
                 docx2pdf.convert(docx_path, pdf_path)
-            except Exception as e:
-                self.logger.error(f"Failed to convert docx to pdf: {e}", exc_info=True)
+                rendered_pdf = pdf_path
             self._post_stage = 5
             current_state['rendered_md'] = md_path
-            current_state['rendered_docx'] = docx_path
+            current_state['rendered_docx'] = rendered_docx
+            current_state['rendered_pdf'] = rendered_pdf
             current_state['finished'] = True
             await self.save(state=current_state, checkpoint_name='report_latest.pkl')
-            self.logger.info(f"[Phase2] Step 4 done, rendered files: md={md_path}, docx={docx_path}, pdf={pdf_path}")
+            self.logger.info(
+                f"[Phase2] Step 4 done, rendered files: md={md_path}, "
+                f"docx={rendered_docx}, pdf={rendered_pdf}"
+            )
         return report
 
     def _get_persist_extra_state(self) -> Dict[str, Any]:
@@ -665,25 +846,25 @@ class ReportGenerator(BaseAgent):
         """
         # Recover from the extra field populated by _get_persist_extra_state
         extra = state.get('extra', {})
-        
+
         phase = extra.get('phase') or state.get('phase')
         if isinstance(phase, str):
             self._phase = phase
-        
+
         section_index = extra.get('section_index') or state.get('section_index')
         if section_index is not None:
             try:
                 self._section_index_done = int(section_index)
             except Exception:
                 pass
-        
+
         post_stage = extra.get('post_stage') or state.get('post_stage')
         if post_stage is not None:
             try:
                 self._post_stage = int(post_stage)
             except Exception:
                 pass
-        
+
         enable_chart = extra.get('enable_chart') or state.get('enable_chart')
         if enable_chart is not None:
             try:
@@ -692,11 +873,11 @@ class ReportGenerator(BaseAgent):
                 pass
         else:
             self.enable_chart = True
-    
+
     async def _prepare_outline_prompt(self, input_data):
         max_iterations = input_data.get('max_iterations', 10)
         outline_template_path = self.config.config.get('outline_template_path', None)
-        
+
         if outline_template_path is None or not os.path.exists(outline_template_path):
             outline_template = ""
         else:
@@ -705,12 +886,12 @@ class ReportGenerator(BaseAgent):
         # Prepare data API description and available analysis info
         data_api_description = self.prompt_loader.get_prompt('data_api_outline')
         analysis_result_list = self.memory.get_analysis_result()
-        
+
         data_info = "You have access to the following analysis results:\n\n"
         for idx, result in enumerate(analysis_result_list):
             data_info += f"**Analysis Report ID {idx}:**\n{result.brief_str()}\n\n"
         data_info += "\nYou can retrieve detailed content using `get_analysis_result(analysis_id)` in your code.\n"
-        
+
         initial_prompt = self.DRAFT_GENERATOR_PROMPT.format(
             task=input_data['task'],
             report_requirements=outline_template,
@@ -722,8 +903,8 @@ class ReportGenerator(BaseAgent):
         return [{"role": "system", "content": initial_prompt}]
 
     async def generate_outline(
-        self, 
-        input_data, 
+        self,
+        input_data,
         max_iterations: int = 10,
         stop_words: list[str] = [],
         echo=False,
@@ -740,12 +921,12 @@ class ReportGenerator(BaseAgent):
         Returns:
             Report object populated with outline sections.
         """
-       
+
         # Prepare executor for outline generation
         await self._prepare_executor()
 
         self.logger.info(f"[Outline] Starting agentic outline generation (max {max_iterations} rounds)")
-        
+
         # Create input data for outline generation
         outline_input_data = {
             'task': input_data['task'],
@@ -762,16 +943,16 @@ class ReportGenerator(BaseAgent):
             checkpoint_name=checkpoint_name,
             prompt_function=self._prepare_outline_prompt,
         )
-    
+
         outline_content = extract_markdown(outline_result['final_result'])
-        
+
         return Report(outline_content) if outline_content else Report("# Error: Could not generate outline")
 
 
 
     async def async_run(
-        self, 
-        input_data: dict, 
+        self,
+        input_data: dict,
         max_iterations: int = 10,
         stop_words: list[str] = [],
         # stop_words: list[str] = ["</draft>", "</outline>", "</report>", "</execute>"],
@@ -793,45 +974,45 @@ class ReportGenerator(BaseAgent):
         start_index = 0
         self.enable_chart = enable_chart
         input_data['max_iterations'] = max_iterations
-        
+
         # Configure post-processing options based on target_type
         target_type = self.config.config.get('target_type', 'general')
-        
+
         # For general/deep-research reports, default to NO introduction (user specifies their own structure)
         # For company/financial reports, default to YES (standard report format)
         if add_introduction is None:
             self.add_introduction = target_type not in ['general']
         else:
             self.add_introduction = add_introduction
-        
+
         self.add_reference_section = add_reference_section
-        
+
         if resume:
             state = await self.load(checkpoint_name=checkpoint_name)
             if state is not None:
                 # Restore extra metadata
                 self._load_persist_extra_state(state)
                 self.logger.info(f"[Resume] phase={getattr(self, '_phase', None)}, section_index={getattr(self, '_section_index_done', None)}, post_stage={getattr(self, '_post_stage', None)}")
-                
+
                 # If the workflow already finished, return the saved report
                 if state.get('finished'):
                     restored_report = state.get('report_obj')
                     if restored_report:
                         self.logger.info("Report already completed, restoring from checkpoint")
                         return restored_report
-                
+
                 # Restore an in-progress report if available
                 restored_report = state.get('report_obj')
                 if restored_report is not None:
                     report = restored_report
                     start_index = self._section_index_done
                     self.logger.info(f"[Resume] Restored report object, will resume from section_index={start_index}")
-        
+
         # Phase 0: outline generation
         if self._phase == 'outline' or report is None:
             self.logger.info("[Phase0] Generating Report Outline")
             report = await self.generate_outline(
-                input_data, 
+                input_data,
                 max_iterations=max_iterations,
                 stop_words=stop_words,
                 echo=echo,
@@ -852,7 +1033,7 @@ class ReportGenerator(BaseAgent):
             self.memory.save()
             self.logger.info(f"[Phase0] Completed: outline sections={len(report.sections)}")
 
-        
+
         # Phase 1: per-section generation
         if self._phase == 'sections':
             self.logger.info("[Phase1] Begin generating sections")
@@ -863,10 +1044,10 @@ class ReportGenerator(BaseAgent):
                 section_input_data = input_data.copy()
                 section_input_data['section_outline'] = section.outline
                 self.logger.info(f"[Phase1] Section {idx+1}/{len(report.sections)} start")
-                
+
                 # Prepare executor with data access functions for agentic workflow
                 await self._prepare_executor()
-                
+
                 # Each section run has its own checkpoint for resume support
                 section_result = await super().async_run(
                     input_data=section_input_data,
@@ -878,7 +1059,7 @@ class ReportGenerator(BaseAgent):
                 )
                 draft_section = section_result['final_result']
                 self.logger.debug(f"[Phase1] Draft section length={len(draft_section)}")
-                
+
                 # Final polish for the section content
                 final_section = await self._final_polish(section_input_data, draft_section)
                 self.logger.debug(f"[Phase1] Final section length={len(final_section)}")
@@ -888,9 +1069,9 @@ class ReportGenerator(BaseAgent):
                     input_data=section_input_data,
                     output_data=section_result,
                     error=False,
-                    note=f"Report generator executed successfully"
+                    note="Report generator executed successfully"
                 )
-                section.set_content(final_section) 
+                section.set_content(final_section)
                 # Save global progress after each section to resume later
                 await self.save(
                     state={
@@ -905,7 +1086,7 @@ class ReportGenerator(BaseAgent):
                 # Update in-memory progress pointer
                 self._section_index_done = idx + 1
                 self.logger.info(f"[Phase1] Section {idx+1} done, checkpoint saved (section_index={self._section_index_done})")
-            
+
             # Move to post-process stage once all sections are done
             self._phase = 'post_process'
             await self.save(
@@ -929,4 +1110,4 @@ class ReportGenerator(BaseAgent):
             self.logger.info("[Phase2] Completed post processing")
 
         return report
-    
+

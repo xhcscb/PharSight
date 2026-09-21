@@ -4,6 +4,41 @@ target_type: 'company'  # company, macro, industry
 market: 'A'  # A (Chinese A-share), HK (Hong Kong), US (United States)
 output_dir: "./outputs/exp-v1"
 language: 'zh' # zh,en
+as_of: null
+jurisdictions: []
+focus_assets: []
+focus_indications: []
+research_questions: []
+source_manifest: null
+
+# Workflow controls. Pharmaceutical example configs override these with
+# deterministic, fail-closed defaults for the first end-to-end run.
+auto_generate_tasks: true
+live_web_search: true
+search_provider: 'serper'
+live_web_search_in_analysis: false
+live_web_search_in_report: false
+strict_cutoff: true
+strict_citations: false
+fail_fast: false
+enable_chart: true
+output_formats: ['md', 'docx', 'pdf']
+allowed_tool_categories: []
+
+# Task-level evidence selection for analysis and report prompts.
+# auto: narrow only when the catalog exceeds evidence_selection_threshold;
+# off: always inject the full catalog; llm: always let the model select.
+evidence_selection: 'auto'
+evidence_selection_threshold: 10
+evidence_selection_max_k: 12
+
+# Conversation-history guards (characters) for long agent runs.
+# A single action result longer than max_action_result_chars is truncated
+# before entering the chat history. Once the history exceeds
+# max_history_chars, the oldest turns are elided while the initial task and
+# the latest turns are preserved.
+max_action_result_chars: 20000
+max_history_chars: 300000
 
 # Per-service rate limits (seconds between consecutive calls)
 rate_limits:

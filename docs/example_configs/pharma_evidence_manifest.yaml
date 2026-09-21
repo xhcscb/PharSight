@@ -1,0 +1,24 @@
+# 这是资料清单结构示例，不包含真实研究证据。复制到 pharsight 内的本地数据目录，
+# 填入经授权的一手资料后，再在运行配置中设置 source_manifest。
+as_of: "2026-09-21T18:00:00+08:00"
+sources:
+  # - source_id: "S001"
+  #   source_type: "exchange_filing"
+  #   publisher: "交易所或上市公司"
+  #   title: "法定披露标题"
+  #   published_at: "2026-03-31T08:00:00+08:00"
+  #   reporting_period: "2025FY"
+  #   url: "https://example.invalid/replace-with-real-source"
+  #   external_id: "URL 不可用时填写官方稳定记录号"
+  #   local_path: "../data/local/replace-with-authorized-document.pdf"
+  #   locator: "第 42 页"
+  #   language: "zh-CN"
+  #   reliability_tier: "primary"
+  #   evidence_label: "fact"
+  #   cutoff_eligible: true
+  #   entity_keys:
+  #     company: "待填写"
+  #     drug: "待填写"
+  #     indication: "待填写"
+  #     jurisdiction: "CN"
+  #   limitations: []
