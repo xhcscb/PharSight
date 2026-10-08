@@ -7,7 +7,6 @@ the package __init__.py, which cascades into heavy optional dependencies
 
 import importlib.util
 import os
-import sys
 
 import pandas as pd
 import pytest
@@ -77,6 +76,26 @@ class TestToolResult:
     def test_get_full_string_non_df(self):
         r = ToolResult("test", "desc", "hello world")
         assert r.get_full_string() == "hello world"
+
+    def test_source_id_prefers_payload(self):
+        r = ToolResult("任意名称", "desc", {"source_id": "s001", "title": "x"})
+        assert r.source_id == "S001"
+
+    def test_source_id_falls_back_to_name_prefix(self):
+        r = ToolResult("S001 年报", "desc", "采集到的正文")
+        assert r.source_id == "S001"
+        assert "S001" in r.brief_str()
+        assert r.reference_text().startswith("S001.")
+
+    def test_name_without_stable_source_id_is_not_citable(self):
+        assert ToolResult("OK 采集结果", "desc", "x").source_id is None
+        assert ToolResult("A股年报", "desc", "x").source_id is None
+        assert ToolResult("年报", "desc", "x").source_id is None
+
+    def test_non_dict_payload_keeps_working_for_name_derived_evidence(self):
+        r = ToolResult("S002 公告", "desc", ["条目一", "条目二"])
+        assert "S002" in r.brief_str()
+        assert r.reference_text().startswith("S002.")
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,25 @@
 import json
+import re
 import uuid
 
 import pandas as pd
+
+SOURCE_ID_PREFIX_PATTERN = re.compile(r"^([A-Z][A-Z0-9_-]{0,31})\b")
+
+
+def _source_id_from_name(name) -> str | None:
+    """Parse a stable source ID from a collector result name such as ``S001 年报``.
+
+    Requires at least one digit so ordinary English words (for example ``OK``)
+    are not mistaken for evidence IDs.
+    """
+    match = SOURCE_ID_PREFIX_PATTERN.match(str(name or "").strip().upper())
+    if not match:
+        return None
+    candidate = match.group(1)
+    if len(candidate) < 2 or not any(char.isdigit() for char in candidate):
+        return None
+    return candidate
 
 
 class Tool:
@@ -60,16 +78,26 @@ class ToolResult:
 
     @property
     def source_id(self):
-        """Return a stable evidence ID when the payload provides one."""
+        """Return a stable evidence ID from the payload or the result name.
+
+        Collectors save results as ``S001 ...``; accepting that stable prefix as
+        the source ID keeps those records citable without rewriting their data.
+        """
         if isinstance(self.data, dict):
             value = self.data.get("source_id")
-            return str(value).strip().upper() if value else None
-        return None
+            if value:
+                return str(value).strip().upper()
+        return _source_id_from_name(self.name)
+
+    @staticmethod
+    def _evidence_payload(data) -> dict:
+        return data if isinstance(data, dict) else {}
 
     def brief_str(self):
+        payload = self._evidence_payload(self.data)
         if self.source_id:
             metadata = {
-                key: self.data.get(key)
+                key: payload.get(key)
                 for key in (
                     "source_id",
                     "source_type",
@@ -87,9 +115,11 @@ class ToolResult:
                     "entity_keys",
                     "limitations",
                 )
-                if self.data.get(key) is not None
+                if payload.get(key) is not None
             }
-            content = str(self.data.get("content", ""))[:3000]
+            metadata.setdefault("source_id", self.source_id)
+            metadata.setdefault("title", self.name)
+            content = str(payload.get("content", self.data))[:3000]
             return (
                 "Evidence metadata:\n"
                 + json.dumps(metadata, ensure_ascii=False, indent=2)
@@ -101,14 +131,15 @@ class ToolResult:
         """Render an evidence record for a report source register."""
         if not self.source_id:
             return str(self.source)
-        title = self.data.get("title") or self.name
-        publisher = self.data.get("publisher") or "未知发布者"
-        published_at = self.data.get("published_at") or "日期未知"
-        locator = self.data.get("locator")
+        payload = self._evidence_payload(self.data)
+        title = payload.get("title") or self.name
+        publisher = payload.get("publisher") or "未知发布者"
+        published_at = payload.get("published_at") or "日期未知"
+        locator = payload.get("locator")
         location = (
-            self.data.get("url")
-            or self.data.get("external_id")
-            or self.data.get("local_path")
+            payload.get("url")
+            or payload.get("external_id")
+            or payload.get("local_path")
             or self.source
         )
         parts = [f"{self.source_id}. {publisher}：《{title}》", str(published_at)]

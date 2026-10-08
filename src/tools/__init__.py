@@ -25,6 +25,7 @@ _TOOL_MODULES = [
     ".industry.industry",
     ".macro.us_macro",
     ".pharma.evidence_manifest",
+    ".document.paddleocr_reader",
 ]
 
 for _mod in _TOOL_MODULES:
@@ -41,6 +42,7 @@ _TOOL_CATEGORIES: Dict[str, List[str]] = {
     'industry': [],
     'web': [],
     'pharma': [],
+    'document': [],
 }
 
 def register_tool(tool_class: Type[Tool], category: str = 'general') -> Type[Tool]:

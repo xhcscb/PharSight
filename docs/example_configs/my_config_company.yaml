@@ -113,10 +113,10 @@ fail_fast: true
 # 首跑关闭图表与 VLM 路径，先验证内容主流程
 enable_chart: false
 
-# 工具白名单：首跑只放开 pharma 受控证据工具；
+# 工具白名单：首跑放开 pharma 受控证据与 document 文档解析工具；
 # 需要直接调用现有财务 API 时改为 ["pharma", "financial"]，
 # 但财务工具结果不携带来源编号，重大数字仍须以资料包为准
-allowed_tool_categories: ["pharma"]
+allowed_tool_categories: ["pharma", "document"]
 
 # 按任务选择证据：证据条数超过阈值时，只把与当前分析/章节最相关的来源注入提示词，
 # 未展示的记录仍可在代码中按 data_id 读取。auto（默认）｜off（总是全量）｜llm（总是选择）

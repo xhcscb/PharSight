@@ -1,5 +1,6 @@
 # Environment
 python-dotenv
+httpx>=0.27
 dill
 json_repair
 ipython

@@ -15,6 +15,7 @@ from src.utils.index_builder import IndexBuilder
 from src.utils.report_validation import (
     PHARMA_DISCLOSURE,
     extract_source_ids,
+    normalize_localized_source_citations,
     validate_source_citations,
 )
 
@@ -127,16 +128,32 @@ class ReportGenerator(BaseAgent):
         collect_data_list = self.memory.get_collect_data(exclude_type=['search', 'click'])
         analysis_result_list = self.memory.get_analysis_result()
 
-        def _get_data(data_id: int):
+        def _resolve_id(data_id, records, label: str) -> int:
+            if isinstance(data_id, int):
+                return data_id
+            value = str(data_id).strip()
+            if value.isdigit():
+                return int(value)
+            match = re.search(r"(?:Data|Analysis Report)\s+ID\s+(\d+)", value, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+            for index, record in enumerate(records):
+                if getattr(record, "source_id", None) == value:
+                    return index
+            raise ValueError(f"Invalid {label}: {data_id}")
+
+        def _get_data(data_id: int | str):
             """Get dataset by index"""
+            data_id = _resolve_id(data_id, collect_data_list, "data_id")
             if 0 <= data_id < len(collect_data_list):
                 return collect_data_list[data_id].data
             else:
                 raise ValueError(f"Invalid data_id: {data_id}. Available range: 0-{len(collect_data_list)-1}")
 
-        def _get_analysis_result(data_id: int):
+        def _get_analysis_result(data_id: int | str):
             """Get analysis results matching the query"""
             # Use LLM-based selection to find relevant analysis results
+            data_id = _resolve_id(data_id, analysis_result_list, "analysis data_id")
             if 0 <= data_id < len(analysis_result_list):
                 return str(analysis_result_list[data_id])[:3000]
             else:
@@ -199,7 +216,15 @@ class ReportGenerator(BaseAgent):
         selected_data_ids = {id(item) for item in selected_collect_data}
         selected_analysis_ids = {id(item) for item in selected_analysis_results}
 
-        data_info = "\n\n## Available Datas\n\n"
+        allowed_source_ids = [
+            item.source_id for item in collect_data_list if item.source_id
+        ]
+        data_info = "\n\n## Allowed citation source_id values\n\n"
+        data_info += (
+            "Copy only these complete values exactly; never alias or renumber them:\n"
+            + "\n".join(f"- {source_id}" for source_id in allowed_source_ids)
+            + "\n\n## Available Datas\n\n"
+        )
         for idx, item in enumerate(collect_data_list):
             if id(item) not in selected_data_ids:
                 continue
@@ -300,10 +325,64 @@ class ReportGenerator(BaseAgent):
             target_language = self.target_language_name
         )
 
-        final_message = [{"role": "user", "content": final_prompt}]
-        output = await self.llm.generate(messages = final_message)
-        final_section = extract_markdown(output)
-        return final_section
+        is_pharma = self.config.config.get('target_type') in {
+            'pharma_company',
+            'pharma_industry',
+        }
+        attempts = 2 if is_pharma else 1
+        last_error = None
+        for attempt in range(attempts):
+            prompt = final_prompt
+            if attempt:
+                prompt += (
+                    "\n上次输出未通过完整性检查。请压缩到 2,000 个中文字符以内，"
+                    "优先覆盖全部提纲项并闭合句子、列表、表格，最后必须输出 "
+                    "<!-- SECTION_COMPLETE -->。"
+                )
+            final_message = [{"role": "user", "content": prompt}]
+            output = await self.llm.generate(messages=final_message)
+            final_section = extract_markdown(output)
+            if not is_pharma:
+                return final_section
+            try:
+                return self._validated_pharma_section(final_section, stage="润色")
+            except ValueError as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Pharma section polish attempt {attempt + 1} incomplete: {exc}"
+                )
+        self.logger.warning(
+            "医药章节润色未完整结束，保留已通过完整性检查的草稿："
+            f"{last_error}"
+        )
+        return draft_section
+
+    @staticmethod
+    def _validated_pharma_section(content: str, *, stage: str) -> str:
+        """Fail closed when a pharmaceutical section is truncated or still an action."""
+        marker = "<!-- SECTION_COMPLETE -->"
+        text = str(content or "").strip()
+        if marker not in text:
+            raise ValueError(f"{stage}结果缺少完成标记")
+        text = text.replace(marker, "").strip()
+        if len(text) < 200:
+            raise ValueError(f"{stage}结果过短（{len(text)} 字符）")
+        if re.search(r"</?(?:execute|report|final_result)>|<parameter>", text, re.I):
+            raise ValueError(f"{stage}结果仍包含动作协议")
+        if text.count("```") % 2:
+            raise ValueError(f"{stage}结果包含未闭合代码围栏")
+        if text.rstrip().endswith((",", "，", "、", "：", "|", "`", "（", "(")):
+            raise ValueError(f"{stage}结果疑似在句子或表格中截断")
+        return text
+
+    @staticmethod
+    def _normalize_markdown_heading(content: str, title: str) -> str:
+        """Give one generated report component its deterministic H2 heading."""
+        text = str(content or "").strip()
+        heading = f"## {title}"
+        if re.match(r"^#{1,6}\s+[^\n]+", text):
+            return re.sub(r"^#{1,6}\s+[^\n]+", heading, text, count=1)
+        return f"{heading}\n\n{text}" if text else heading
 
     async def _replace_image_path(self, report):
         """
@@ -415,6 +494,14 @@ class ReportGenerator(BaseAgent):
             }
         ])
         response_content = extract_markdown(response_content)
+        if self.config.config.get('target_type') in {
+            'pharma_company',
+            'pharma_industry',
+        }:
+            response_content = self._normalize_markdown_heading(
+                response_content,
+                '摘要与研究姿态',
+            )
         report.abstract = response_content
 
         new_title = await self.llm.generate(
@@ -540,9 +627,27 @@ class ReportGenerator(BaseAgent):
         strict_citations = self.config.config.get('strict_citations', False)
 
         if strict_citations:
-            source_by_id = {
-                item.source_id: item for item in collect_data_list if item.source_id
-            }
+            source_by_id = {}
+            for item in collect_data_list:
+                if not item.source_id:
+                    continue
+                existing = source_by_id.get(item.source_id)
+                if existing is None or self._reference_record_score(
+                    item
+                ) > self._reference_record_score(existing):
+                    source_by_id[item.source_id] = item
+            report._content = normalize_localized_source_citations(
+                report._content, source_by_id
+            )
+            report.abstract = normalize_localized_source_citations(
+                report.abstract, source_by_id
+            )
+            for section in report.sections:
+                section._content = [
+                    normalize_localized_source_citations(paragraph, source_by_id)
+                    for paragraph in section._content
+                ]
+
             validation = validate_source_citations(
                 report.content,
                 source_by_id,
@@ -555,19 +660,29 @@ class ReportGenerator(BaseAgent):
                 )
             }
 
+            def replace_structured_references(text: str) -> str:
+                def replace_structured_reference(match):
+                    ids = extract_source_ids(match.group(1))
+                    if not ids or any(
+                        source_id not in citation_numbers for source_id in ids
+                    ):
+                        return match.group(0)
+                    numbers = [str(citation_numbers[source_id]) for source_id in ids]
+                    return f"[{','.join(numbers)}]"
+
+                return re.sub(
+                    r'\[[Ss]ource[：:]\s*([^\]]+)\]',
+                    replace_structured_reference,
+                    text,
+                )
+
+            report._content = replace_structured_references(report._content)
+            report.abstract = replace_structured_references(report.abstract)
+
             for section in report.sections:
                 section_new_content = []
                 for paragraph in section._content:
-                    def replace_structured_reference(match):
-                        ids = extract_source_ids(match.group(1))
-                        numbers = [str(citation_numbers[source_id]) for source_id in ids]
-                        return f"[{','.join(numbers)}]"
-
-                    paragraph = re.sub(
-                        r'\[[Ss]ource[：:]\s*([^\]]+)\]',
-                        replace_structured_reference,
-                        paragraph,
-                    )
+                    paragraph = replace_structured_references(paragraph)
                     section_new_content.append(paragraph)
                 section._content = section_new_content
 
@@ -664,6 +779,27 @@ class ReportGenerator(BaseAgent):
         new_section.set_content(reference_str)
         report.sections.append(new_section)
         return report
+
+    @staticmethod
+    def _reference_record_score(item) -> int:
+        """Prefer canonical parent-document metadata over task-level aliases."""
+        data = item.data if isinstance(item.data, dict) else {}
+        title = str(data.get('title') or item.name or '')
+        publisher = str(data.get('publisher') or '')
+        url = str(data.get('url') or item.source or '')
+        score = 0
+        score += 4 if url.startswith(('http://', 'https://')) else 0
+        score += 3 if data.get('document_hash') else 0
+        score += 2 if data.get('parser') else 0
+        score += 2 if data.get('page_count') else 0
+        score += 2 if publisher and '未知' not in publisher else 0
+        score += 1 if data.get('source_type') == 'web_pdf' else 0
+        score += 1 if data.get('retrieved_at') else 0
+        if title and not any(
+            token in title for token in ('任务证据', 'PDF检索', '事实与假设分离')
+        ):
+            score += 4
+        return score
 
     def _ensure_pharma_disclosure(self, report):
         target_type = self.config.config.get('target_type', 'general')
@@ -922,6 +1058,21 @@ class ReportGenerator(BaseAgent):
             Report object populated with outline sections.
         """
 
+        if self.config.config.get('use_outline_template_directly', False):
+            outline_template_path = self.config.config.get('outline_template_path')
+            if not outline_template_path or not os.path.exists(outline_template_path):
+                raise FileNotFoundError(
+                    "use_outline_template_directly requires an existing outline_template_path"
+                )
+            with open(outline_template_path, 'r', encoding='utf-8') as handle:
+                outline_content = handle.read().strip()
+            if not outline_content:
+                raise ValueError("Direct outline template must not be empty")
+            self.logger.info(
+                f"[Outline] Using template directly: {outline_template_path}"
+            )
+            return Report(outline_content)
+
         # Prepare executor for outline generation
         await self._prepare_executor()
 
@@ -1049,19 +1200,45 @@ class ReportGenerator(BaseAgent):
                 await self._prepare_executor()
 
                 # Each section run has its own checkpoint for resume support
-                section_result = await super().async_run(
-                    input_data=section_input_data,
-                    max_iterations=max_iterations,
-                    stop_words=stop_words,
-                    echo=echo,
-                    resume=resume and idx == start_index,
-                    checkpoint_name=f'section_{idx}.pkl'
-                )
-                draft_section = section_result['final_result']
+                section_result = None
+                draft_section = ""
+                is_pharma = target_type in {'pharma_company', 'pharma_industry'}
+                draft_attempts = 2 if is_pharma else 1
+                last_draft_error = None
+                for attempt in range(draft_attempts):
+                    section_result = await super().async_run(
+                        input_data=section_input_data,
+                        max_iterations=max_iterations,
+                        stop_words=stop_words,
+                        echo=echo,
+                        resume=resume and idx == start_index and attempt == 0,
+                        checkpoint_name=f'section_{idx}.pkl'
+                    )
+                    draft_section = section_result['final_result']
+                    if not is_pharma:
+                        break
+                    try:
+                        draft_section = self._validated_pharma_section(
+                            draft_section,
+                            stage="草稿",
+                        )
+                        break
+                    except ValueError as exc:
+                        last_draft_error = exc
+                        self.logger.warning(
+                            f"Pharma section draft attempt {attempt + 1} incomplete: {exc}"
+                        )
+                else:
+                    raise RuntimeError(f"医药章节草稿未完整结束：{last_draft_error}")
                 self.logger.debug(f"[Phase1] Draft section length={len(draft_section)}")
 
                 # Final polish for the section content
                 final_section = await self._final_polish(section_input_data, draft_section)
+                if is_pharma:
+                    final_section = self._normalize_markdown_heading(
+                        final_section,
+                        section.title,
+                    )
                 self.logger.debug(f"[Phase1] Final section length={len(final_section)}")
                 self.memory.add_log(
                     id=self.id,

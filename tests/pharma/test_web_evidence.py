@@ -3,7 +3,8 @@
 import pytest
 
 from src.tools.pharma import build_web_evidence
-from src.tools.web.search_engine_requests import SerperSearch
+from src.tools.web.search_engine_requests import BochaSearch, SerperSearch
+from src.tools.web.web_crawler import extract_pdf_links_from_markdown
 
 
 def test_browsed_page_becomes_citable_evidence_before_cutoff():
@@ -48,9 +49,33 @@ def test_live_page_after_cutoff_is_not_citable():
     assert evidence is None
 
 
+def test_html_click_discovers_relative_pdf_attachments_with_parent_identity():
+    links = extract_pdf_links_from_markdown(
+        "[下载公告](../files/annual-report.pdf)\n"
+        "https://cdn.example.invalid/other.pdf\n"
+        "[重复](../files/annual-report.pdf)",
+        "https://example.invalid/disclosure/123",
+        "恒瑞医药2024年年度报告",
+    )
+
+    assert [item["url"] for item in links] == [
+        "https://example.invalid/files/annual-report.pdf",
+        "https://cdn.example.invalid/other.pdf",
+    ]
+    assert links[0]["document_type"] == "annual_report"
+
+
 @pytest.mark.asyncio
 async def test_serper_fails_before_network_when_key_is_missing(monkeypatch):
     monkeypatch.delenv("SERPER_API_KEY", raising=False)
     search = SerperSearch()
     with pytest.raises(RuntimeError, match="SERPER_API_KEY is required"):
+        await search.api_function("测试查询")
+
+
+@pytest.mark.asyncio
+async def test_bocha_fails_before_network_when_key_is_missing(monkeypatch):
+    monkeypatch.delenv("BOCHAAI_API_KEY", raising=False)
+    search = BochaSearch()
+    with pytest.raises(RuntimeError, match="BOCHAAI_API_KEY is required"):
         await search.api_function("测试查询")

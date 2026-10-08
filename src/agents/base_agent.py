@@ -1,18 +1,17 @@
 """Base agent with save/load/run capabilities."""
-from typing import Dict, Any, Union, Optional, Type
-import sys
 import os
 import pickle
-import dill
-import uuid
 import re
-import asyncio
+import uuid
 from datetime import datetime
-from src.config import Config
-from src.tools import list_tools, get_tool_by_name
-from src.utils import AsyncCodeExecutor, get_logger
-from src.tools.base import Tool
+from typing import Any, Dict, Optional, Type, Union
 
+import dill
+
+from src.config import Config
+from src.tools import get_tool_by_name
+from src.tools.base import Tool
+from src.utils import AsyncCodeExecutor, get_logger
 
 _AGENT_REGISTRY: Dict[str, Type['BaseAgent']] = {}
 
@@ -24,15 +23,15 @@ class BaseAgent:
     AGENT_NAME = 'base'
     AGENT_DESCRIPTION = 'base agent'
     NECESSARY_KEYS = ['task']
-    
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         if hasattr(cls, 'AGENT_NAME') and cls.AGENT_NAME != 'base':
             register_agent_class(cls)
-    
+
     def __init__(
-        self, 
-        config: Config, 
+        self,
+        config: Config,
         tools: list[Union[Tool, 'BaseAgent']],
         use_llm_name: str = "deepseek-chat",
         enable_code = True,
@@ -51,20 +50,22 @@ class BaseAgent:
         os.makedirs(self.working_dir, exist_ok=True)
         self.cache_dir = os.path.join(self.working_dir, '.cache')
         os.makedirs(self.cache_dir, exist_ok=True)
-        
+
         self.current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         self.enable_code = enable_code
         if self.enable_code:
             self.executor_path = os.path.join(self.working_dir, '.executor_cache')
             os.makedirs(self.executor_path, exist_ok=True)
-            self.code_executor = AsyncCodeExecutor(self.executor_path)
+            executor_timeout = float(self.config.config.get('code_execution_timeout', 360))
+            self.code_executor = AsyncCodeExecutor(self.executor_path, exec_timeout=executor_timeout)
             self.executor_state_path = os.path.join(self.executor_path, 'state.dill')
-        
+
         self.use_llm_name = use_llm_name
-        self.llm = self.config.llm_dict[use_llm_name]
+        create_llm = getattr(self.config, 'create_llm', None)
+        self.llm = create_llm(use_llm_name) if callable(create_llm) else self.config.llm_dict[use_llm_name]
         self.memory = memory
-        
+
         if tools is None or tools == []:
             self._set_default_tools()
         else:
@@ -75,11 +76,11 @@ class BaseAgent:
         self.current_checkpoint = {}
         self._resume_state: Dict[str, Any] | None = None
         self.current_round = 0
-        
+
         # Initialize logger and set agent context
         self.logger = get_logger()
         self.logger.set_agent_context(self.id, self.AGENT_NAME)
-    
+
     def _set_default_tools(self):
         return []
 
@@ -90,7 +91,7 @@ class BaseAgent:
     def _load_persist_extra_state(self, state: Dict[str, Any]):
         """Hook for subclasses to restore extra state."""
         return
-    
+
     @classmethod
     async def from_checkpoint(
         cls,
@@ -105,18 +106,18 @@ class BaseAgent:
         """Restore an agent from a checkpoint."""
         if restored_agents is None:
             restored_agents = {}
-        
+
         # Return immediately if already restored
         if agent_id in restored_agents:
             return restored_agents[agent_id]
-        
+
         # Build checkpoint path
         working_dir = os.path.join(config.working_dir, 'agent_working', agent_id)
         cache_dir = os.path.join(working_dir, '.cache')
         checkpoint_path = os.path.join(cache_dir, checkpoint_name)
-        
+
         logger = get_logger()
-        
+
         if not os.path.exists(checkpoint_path):
             # Try alternative checkpoints
             if not os.path.exists(cache_dir):
@@ -124,7 +125,7 @@ class BaseAgent:
                     f"Cache directory not found for agent {agent_id}: {cache_dir}"
                 )
                 return None
-            
+
             other_checkpoints = [f for f in os.listdir(cache_dir) if f.endswith('.pkl')]
             if other_checkpoints:
                 checkpoint_path = os.path.join(cache_dir, other_checkpoints[0])
@@ -139,7 +140,7 @@ class BaseAgent:
                     f"available_files={os.listdir(cache_dir) if os.path.exists(cache_dir) else 'N/A'}"
                 )
                 return None
-        
+
         # Load checkpoint
         try:
             with open(checkpoint_path, 'rb') as f:
@@ -156,7 +157,7 @@ class BaseAgent:
                     f"pickle_error={type(e2).__name__}: {e2}"
                 )
                 return None
-        
+
         agent_name = state.get('agent_name')
         if not agent_name:
             logger.warning(
@@ -164,7 +165,7 @@ class BaseAgent:
                 f"path={checkpoint_path}"
             )
             return None
-        
+
         # Lookup agent class from registry
         agent_class = _AGENT_REGISTRY.get(agent_name)
         if not agent_class:
@@ -174,23 +175,23 @@ class BaseAgent:
                 f"available_agents={list(_AGENT_REGISTRY.keys())}"
             )
             return None
-        
+
         # Restore dependent tools if not provided
         if tools is None:
             tools = await cls._restore_tools_from_checkpoint(
                 config, memory, state, checkpoint_name, restored_agents, **kwargs
             )
-        
+
         # Restore persisted parameters
         checkpoint_use_llm_name = state.get('use_llm_name', 'deepseek-chat')
         use_llm_name = kwargs.get('use_llm_name', checkpoint_use_llm_name)
-        
+
         # Restore additional init kwargs
         init_params = state.get('init_params', {})
         for key, value in init_params.items():
             if key not in kwargs:
                 kwargs[key] = value
-        
+
         # Instantiate agent
         agent = agent_class(
             config=config,
@@ -200,15 +201,15 @@ class BaseAgent:
             tools=tools,
             **{k: v for k, v in kwargs.items() if k != 'use_llm_name'}
         )
-        
+
         # Restore runtime state
         agent._resume_state = state
         agent.current_checkpoint = state
         agent.current_task_data = state.get('current_task_data', {})
-        
+
         # Ensure logger context is configured
         agent.logger.set_agent_context(agent.id, agent.AGENT_NAME)
-        
+
         # Restore executor state
         if agent.enable_code and os.path.exists(agent.executor_state_path):
             try:
@@ -217,13 +218,13 @@ class BaseAgent:
                 agent.code_executor.load_state(exec_state)
             except Exception as e:
                 agent.logger.error(f"Failed to load code-executor state: {e}", exc_info=True)
-        
+
         # Restore subclass-specific state
         agent._load_persist_extra_state(state)
-        
+
         restored_agents[agent_id] = agent
         return agent
-    
+
     @classmethod
     async def _restore_tools_from_checkpoint(
         cls,
@@ -235,12 +236,11 @@ class BaseAgent:
         **kwargs
     ) -> list:
         """Restore tools from checkpoint state."""
-        from src.tools import get_tool_by_name
-        
+
         tool_dependencies = state.get('tool_dependencies', [])
         restored_tools = []
         logger = get_logger()
-        
+
         for dep in tool_dependencies:
             if dep['type'] == 'agent':
                 # Recursively restore dependent agents
@@ -249,14 +249,14 @@ class BaseAgent:
                 dep_working_dir = os.path.join(config.working_dir, 'agent_working', dep_agent_id)
                 dep_cache_dir = os.path.join(dep_working_dir, '.cache')
                 dep_checkpoint_path = os.path.join(dep_cache_dir, checkpoint_name)
-                
+
                 # If the specified checkpoint is missing, fall back to any available one
                 if not os.path.exists(dep_checkpoint_path):
                     if os.path.exists(dep_cache_dir):
                         other_checkpoints = [f for f in os.listdir(dep_cache_dir) if f.endswith('.pkl')]
                         if other_checkpoints:
                             dep_checkpoint_path = os.path.join(dep_cache_dir, other_checkpoints[0])
-                
+
                 # Read dependency checkpoint to fetch its parameters
                 dep_kwargs = {}
                 if os.path.exists(dep_checkpoint_path):
@@ -280,7 +280,7 @@ class BaseAgent:
                 else:
                     # Use generic kwargs if no checkpoint exists
                     dep_kwargs['use_llm_name'] = kwargs.get('use_llm_name')
-                
+
                 dep_agent = await cls.from_checkpoint(
                     config=config,
                     memory=memory,
@@ -297,7 +297,7 @@ class BaseAgent:
                 if tool_instance.id != dep['tool_id']:
                     tool_instance.id = dep['tool_id']
                 restored_tools.append(tool_instance)
-        
+
         return restored_tools
 
     async def save(self, state: Dict[str, Any] | None = None, checkpoint_name: str = 'latest.pkl'):
@@ -317,13 +317,13 @@ class BaseAgent:
                     'tool_name': tool.name,
                     'tool_id': tool.id,
                 })
-        
+
         # Persist relevant initialization parameters
         init_params = {}
         for key in ['use_llm_name', 'enable_code', 'use_vlm_name', 'use_embedding_name']:
             if hasattr(self, key):
                 init_params[key] = getattr(self, key)
-        
+
         checkpoint = {
             'agent_name': self.AGENT_NAME,
             'agent_id': self.id,
@@ -389,7 +389,7 @@ class BaseAgent:
 
     async def _prepare_init_prompt(self, input_data: dict) -> list[dict]:
         raise NotImplementedError
-    
+
 
     def _agent_tool_function(self, tool_name: str = None, **kwargs):
         """Execute a tool by name.
@@ -429,7 +429,6 @@ class BaseAgent:
         if rate_limiter is not None:
             # Determine service category for rate limiting
             service = "financial_apis"  # default
-            tool_type = getattr(target_tool, 'type', '')
             tool_name_lower = (tool_name or '').lower()
             if 'search' in tool_name_lower or 'web' in tool_name_lower:
                 service = "search_engines"
@@ -446,7 +445,14 @@ class BaseAgent:
             if issubclass(type(target_tool), BaseAgent):
                 if 'task' not in kwargs:
                     kwargs['task'] = self.current_task_data['task']
-                response = bridge.run_async(target_tool.async_run(input_data=kwargs))
+                run_kwargs = {}
+                if target_tool.AGENT_NAME == 'deepsearch agent':
+                    run_kwargs['max_iterations'] = int(
+                        self.config.config.get('deep_search_max_iterations', 8)
+                    )
+                response = bridge.run_async(
+                    target_tool.async_run(input_data=kwargs, **run_kwargs)
+                )
                 response = response['final_result']
                 self.memory.add_log(target_tool.id, target_tool.type, kwargs, response, error=False, note=f"Tool {target_tool.name} executed successfully")
                 return response
@@ -471,7 +477,7 @@ class BaseAgent:
             self.logger.error(f"Tool {tool_name} execution failed: {e}", exc_info=True)
             self.memory.add_log(self.id, target_tool.type, kwargs, [], error=True, note=f"Tool {tool_name} executed failed: {e}")
             return []
-    
+
     def _get_api_descriptions(self) -> str:
         desc = 'The usage of tool calling: `tool_result = call_tool(tool_name=\'tool_name\', **kwargs)`. (you can use custom variable names for the tool result)\n\n'
         desc += 'Below are the tools and their descriptions:\n\n'
@@ -482,7 +488,7 @@ class BaseAgent:
                 desc += f"- Tool: {tool.AGENT_NAME}\nDescription: {tool.AGENT_DESCRIPTION}\n\n"
         desc += 'The result of each tool is a varaible, please use `print` to print the result.'
         return desc
-    
+
     def _check_necessary_data(self, input_data):
         check_keys = self.NECESSARY_KEYS
         for key in check_keys:
@@ -541,8 +547,8 @@ class BaseAgent:
         return [head, note] + selected
 
     async def async_run(
-        self, 
-        input_data: dict, 
+        self,
+        input_data: dict,
         max_iterations: int = 10,
         stop_words: list[str] = ["</execute>", "</final_result>"],
         echo=False,
@@ -553,7 +559,7 @@ class BaseAgent:
         """Main execution loop."""
         # Ensure logger context is set (important for asyncio execution)
         self.logger.set_agent_context(self.id, self.AGENT_NAME)
-        
+
         self._check_necessary_data(input_data)
         self.current_task_data = input_data
         await self._prepare_executor()
@@ -577,8 +583,8 @@ class BaseAgent:
         else:
             conversation_history = await prompt_function(input_data)
             current_round = 0
-    
-        while current_round < max_iterations+1:
+
+        while current_round < max_iterations:
             self.logger.info(f"Iteration {current_round + 1}")
             current_round += 1
             self.current_round = current_round
@@ -613,10 +619,10 @@ class BaseAgent:
                 state=current_state,
                 checkpoint_name=checkpoint_name,
             )
-            
+
             if not action_result['continue']:
                 break
-        
+
         return_dict = {}
         if current_round >= max_iterations and action_result['continue']:
             # Hit iteration limit; fall back to summary handler
@@ -642,7 +648,7 @@ class BaseAgent:
             checkpoint_name=checkpoint_name,
         )
         self.memory.save()
-        
+
         return return_dict
 
     async def _handle_max_round(self, conversation_history):
@@ -652,9 +658,33 @@ class BaseAgent:
         """Parse the LLM response to extract action tags."""
         response = response.replace("<thinking>", "\n").replace("</thinking>", "\n")
         response = response.replace("<think>", "\n").replace("</think>", "\n")
+        if not response.strip():
+            return "invalid_response", "The model returned an empty response. Retry the requested task."
+        detached_code = re.search(
+            r"<execute>\s*(?:Python\s*(?:代码|code)?|代码)?\s*</execute>\s*"
+            r"```(?:python|py)?\s*\n?(.*?)\n?```",
+            response,
+            re.DOTALL | re.IGNORECASE,
+        )
+        terminal_pattern = re.compile(
+            r"<(final_result|report|outline|draft)>(.*?)</\1>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        terminal_matches = list(terminal_pattern.finditer(response))
+        if terminal_matches and (
+            detached_code is None or terminal_matches[-1].start() > detached_code.start()
+        ):
+            terminal = terminal_matches[-1]
+            action = "final" if terminal.group(1).lower() == "final_result" else terminal.group(1).lower()
+            return action, terminal.group(2).strip()
+        if detached_code:
+            return "code", detached_code.group(1).strip()
+        dsml_action = self._parse_dsml_tool_calls(response)
+        if dsml_action is not None:
+            return dsml_action
         pattern = re.compile(r"<([\w_]+)>(.*?)</\1>", re.DOTALL)
         matches = list(pattern.finditer(response))
-        
+
         if not matches:
             return "final", response
         match = matches[-1]
@@ -665,10 +695,97 @@ class BaseAgent:
         if tag_name == 'final_result':
             tag_name = 'final'
         content_string = match.group(2).strip()  # Remove surrounding whitespace
+        if tag_name == 'code':
+            content_string = self._strip_markdown_code_fence(content_string)
 
         return tag_name, content_string
 
-    
+    @staticmethod
+    def _strip_markdown_code_fence(content: str) -> str:
+        """Remove a Markdown fence accidentally nested inside an execute tag."""
+        stripped = content.strip()
+        fenced = re.fullmatch(r"```(?:python|py)?\s*\n?(.*?)\n?```", stripped, re.DOTALL | re.IGNORECASE)
+        stripped = fenced.group(1).strip() if fenced else stripped
+        stripped = re.sub(
+            r"^(?:Python\s*(?:代码|code)?|代码)\s*(?:\r?\n|$)",
+            "",
+            stripped,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return stripped.strip()
+
+    def _parse_dsml_tool_calls(self, response: str) -> tuple[str, str] | None:
+        """Normalize DeepSeek-style DSML tool calls to executable Python.
+
+        Some OpenAI-compatible providers serialize tool calls into the message
+        content instead of returning the XML contract requested by Pharsight.
+        Keeping this compatibility at the parser boundary avoids provider syntax
+        leaking into individual agents.
+        """
+        invoke_pattern = re.compile(
+            r'<[^<>]*DSML[^<>]*invoke\s+name="([^"]+)">(.*?)'
+            r'</[^<>]*DSML[^<>]*invoke>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        invokes = list(invoke_pattern.finditer(response))
+        if not invokes:
+            # The configured stop word can end a provider DSML invocation at
+            # ``</execute>`` before its DSML closing tag is emitted.
+            truncated_execute = re.search(
+                r'<[^<>]*DSML[^<>]*invoke\s+name="execute"[^>]*>(.*?)(?:</execute>|$)',
+                response,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if truncated_execute:
+                code = self._strip_markdown_code_fence(truncated_execute.group(1))
+                if not code:
+                    code = "print('Empty execute action received; continue with the task.')"
+                return "code", code
+            orphan_code = re.search(
+                r'<[^<>]*DSML[^<>]*parameter\s+name="code"[^>]*>(.*?)'
+                r'</[^<>]*DSML[^<>]*parameter>',
+                response,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if orphan_code:
+                return "code", self._strip_markdown_code_fence(orphan_code.group(1))
+            return None
+
+        statements: list[str] = []
+        parameter_pattern = re.compile(
+            r'<[^<>]*DSML[^<>]*parameter\s+name="([^"]+)"[^>]*>(.*?)'
+            r'</[^<>]*DSML[^<>]*parameter>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for index, invoke in enumerate(invokes):
+            tool_name = invoke.group(1).strip()
+            body = invoke.group(2).strip()
+            if tool_name == "execute":
+                body = re.sub(r'</?[^<>]*DSML[^<>]*(?:parameter|calls)[^>]*>', '', body)
+                body = re.sub(r'</?(?:execute|invoke)>', '', body, flags=re.IGNORECASE)
+                code = self._strip_markdown_code_fence(body)
+                if code:
+                    statements.append(code)
+                continue
+
+            parameters = {
+                match.group(1): match.group(2).strip()
+                for match in parameter_pattern.finditer(body)
+            }
+            kwargs = ", ".join(f"{name}={value!r}" for name, value in parameters.items())
+            comma = ", " if kwargs else ""
+            variable = f"_dsml_tool_result_{index}"
+            statements.append(
+                f"{variable} = call_tool(tool_name={tool_name!r}{comma}{kwargs})\n"
+                f"print({variable})"
+            )
+
+        if not statements:
+            return None
+        return "code", "\n\n".join(statements)
+
+
     async def _execute_action(self, action_type: str, action_content: str):
         handler_method_name = f"_handle_{action_type}_action"
         handler = getattr(self, handler_method_name, None)
@@ -677,7 +794,7 @@ class BaseAgent:
             return await handler(action_content)
         else:
             return await self._handle_default_action(action_type, action_content)
-    
+
 
     async def _handle_code_action(self, action_content: str):
         code_result = await self.code_executor.execute(code=action_content)
@@ -704,8 +821,8 @@ class BaseAgent:
             "result": f"Unknown action_type '{action_type}'. Please respond using the required XML tags.",
             "continue": True,
         }
-     
-        
+
+
     def _format_execution_result(self, result: Dict[str, Any]) -> str:
         feedback = []
 
@@ -727,7 +844,7 @@ class BaseAgent:
                 feedback.append(f"Error message: {result['stderr']}\n")
             if result["stdout"]:
                 feedback.append(f"Partial output: {result['stdout']}\n")
-        return "\n".join(feedback)    
-        
-        
-        
+        return "\n".join(feedback)
+
+
+

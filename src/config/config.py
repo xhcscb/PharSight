@@ -254,14 +254,31 @@ class Config:
         llm_dict = {}
         for llm_config in llm_config_list:
             model_name = llm_config['model_name']
-            llm = AsyncLLM(
-                base_url=llm_config['base_url'],
-                api_key=llm_config['api_key'],
-                model_name=model_name,
-                generation_params=llm_config.get('generation_params', {})
-            )
-            llm_dict[model_name] = llm
+            llm_dict[model_name] = self.create_llm(model_name, llm_class=AsyncLLM)
         self.llm_dict = llm_dict
+
+    def create_llm(self, model_name: str, *, llm_class=None):
+        """Create an isolated async client for one agent or memory operation."""
+        if llm_class is None:
+            from src.utils.llm import AsyncLLM
+
+            llm_class = AsyncLLM
+        llm_config = next(
+            (
+                item
+                for item in self.config.get('llm_config_list', [])
+                if item.get('model_name') == model_name
+            ),
+            None,
+        )
+        if llm_config is None:
+            raise ValueError(f"Model '{model_name}' is not present in llm_config_list")
+        return llm_class(
+            base_url=llm_config['base_url'],
+            api_key=llm_config['api_key'],
+            model_name=model_name,
+            generation_params=llm_config.get('generation_params', {}),
+        )
 
     def _set_rate_limiter(self):
         """Initialize the global rate limiter from config."""

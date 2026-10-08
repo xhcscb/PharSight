@@ -20,7 +20,10 @@ MAX_CONCURRENT = 3
 
 
 def _resolve_model_name(config, config_key: str, env_key: str, *, required: bool = True):
-    model_name = config.config.get(config_key) or os.getenv(env_key)
+    configured_model = config.config.get(config_key)
+    if not required and not configured_model:
+        return None
+    model_name = configured_model or os.getenv(env_key)
     if required and not model_name:
         raise ValueError(
             f"Model name is required. Set '{config_key}' or environment variable '{env_key}'."
@@ -124,12 +127,16 @@ async def run_report(
         resume: Whether to resume from previous state
         max_concurrent: Maximum number of concurrent tasks. If None, uses MAX_CONCURRENT env var or unlimited.
     """
+    # Load .env before importing agents/tools: the tool registry instantiates
+    # search tools at import time, and they read their API keys from the
+    # environment in __init__.
+    load_dotenv(PROJECT_ROOT / ".env")
+
     # Keep command-line discovery usable before heavyweight runtime dependencies are
     # installed; actual agents are imported only when a run starts.
     from src.agents import DataAnalyzer, DataCollector, ReportGenerator
     from src.memory import Memory
 
-    load_dotenv(PROJECT_ROOT / ".env")
 
     # Get max concurrent from parameter, env var, or default to unlimited
     if max_concurrent is None:

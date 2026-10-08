@@ -63,9 +63,9 @@ class DataCollector(BaseAgent):
         if configured_categories:
             allowed_categories = set(configured_categories)
         elif target_type == 'pharma_company':
-            allowed_categories = {'pharma', 'financial', 'industry'}
+            allowed_categories = {'pharma', 'financial', 'industry', 'document'}
         elif target_type == 'pharma_industry':
-            allowed_categories = {'pharma', 'industry', 'macro', 'financial'}
+            allowed_categories = {'pharma', 'industry', 'macro', 'financial', 'document'}
         else:
             allowed_categories = {
                 category for category in get_tool_categories() if category != 'web'
@@ -112,6 +112,160 @@ class DataCollector(BaseAgent):
             self.logger.info(f"Saved collect result: {result_name} (source={data_source})")
         except Exception:
             pass
+
+    def _agent_tool_function(self, tool_name: str = None, **kwargs):
+        """Run a tool and normalize a remotely parsed PDF into citable evidence."""
+        response = super()._agent_tool_function(tool_name=tool_name, **kwargs)
+        if tool_name == "deepsearch agent":
+            evidence_items = [
+                item
+                for item in self.memory.get_collect_data()
+                if item.source_id and isinstance(item.data, dict)
+            ]
+            if not evidence_items:
+                return response
+            evidence_lines = [
+                "\n\n本次 Deep Search 已写入以下可引用证据。"
+                "保存结果时必须原样使用这些来源编号，不得改写为 S001 等占位符："
+            ]
+            for item in evidence_items[-8:]:
+                record = item.data
+                content_preview = str(record.get("content", ""))[:2500]
+                evidence_lines.append(
+                    f"\n[Source:{item.source_id}] {record.get('title', item.name)}"
+                    f"\nURL: {record.get('url', item.source)}"
+                    f"\n文档类型: {record.get('document_type') or '未分类'}"
+                    f"\n报告期: {record.get('reporting_period') or '未识别'}"
+                    f"\n证据摘录:\n{content_preview}"
+                )
+            return f"{response}{''.join(evidence_lines)}"
+        if tool_name == "PDF evidence search":
+            return self._merge_pdf_retrieval_response(response)
+        if tool_name != "PaddleOCR PDF reader" or not kwargs.get("file_url"):
+            return response
+        if not isinstance(response, list) or not response:
+            return response
+        payload = response[0] if isinstance(response[0], dict) else getattr(response[0], "data", None)
+        if not isinstance(payload, dict) or not payload.get("markdown"):
+            return response
+
+        from src.tools.document.pdf_ingestion import classify_pdf_document
+        from src.tools.pharma import build_web_evidence
+
+        identity = classify_pdf_document(
+            payload["markdown"],
+            payload.get("document_title") or payload.get("file_name") or kwargs["file_url"],
+        )
+        index_metadata = payload.get("index") if isinstance(payload.get("index"), dict) else None
+        if index_metadata:
+            evidence_content = (
+                f"完整 PDF 已解析并建立任务检索索引：共 {index_metadata.get('page_count')} 页、"
+                f"{index_metadata.get('chunk_count')} 个文本块。文档哈希："
+                f"{index_metadata.get('document_hash')}。后续事实采集必须调用 PDF evidence search，"
+                "不得把整本文档直接注入模型上下文。"
+            )
+        else:
+            evidence_content = payload["markdown"]
+        evidence = build_web_evidence(
+            url=kwargs["file_url"],
+            title=payload.get("document_title") or payload.get("file_name") or kwargs["file_url"],
+            content=evidence_content,
+            as_of=self.config.config["as_of"],
+            retrieved_at=payload.get("retrieved_at"),
+            source_type="web_pdf",
+            parser=payload.get("parser"),
+            document_hash=payload.get("document_hash"),
+            page_count=(index_metadata or {}).get("page_count") or payload.get("page_count"),
+            final_url=payload.get("source_url") or kwargs["file_url"],
+            document_type=identity["document_type"],
+            reporting_period=identity["reporting_period"],
+        )
+        if evidence is None:
+            return response
+        if index_metadata:
+            evidence.data["document_index"] = index_metadata
+            evidence.data["locator"] = (
+                f"PDF 完整解析索引，共 {index_metadata.get('page_count')} 页、"
+                f"{index_metadata.get('chunk_count')} 个文本块"
+            )
+        existing_ids = {
+            item.source_id
+            for item in self.memory.get_collect_data()
+            if item.source_id
+        }
+        if evidence.source_id not in existing_ids:
+            self.memory.add_data(evidence)
+        approved_evidence = [
+            item.data
+            for item in self.memory.get_collect_data()
+            if item.source_id
+        ]
+        self.code_executor.set_variable("approved_evidence", approved_evidence)
+        return [evidence.data]
+
+    def _merge_pdf_retrieval_response(self, response):
+        """Upsert retrieved PDF chunks into the document-level evidence record."""
+        if not isinstance(response, list):
+            return response
+        returned_records = [item for item in response if isinstance(item, dict)]
+        for record in returned_records:
+            source_id = str(record.get("source_id") or "").strip().upper()
+            if not source_id or not record.get("content"):
+                continue
+            existing = next(
+                (
+                    item
+                    for item in self.memory.get_collect_data()
+                    if item.source_id == source_id and isinstance(item.data, dict)
+                ),
+                None,
+            )
+            if existing is None:
+                self.memory.add_data(
+                    ToolResult(
+                        name=f"{source_id} {record.get('title') or 'PDF 检索证据'}",
+                        description="PDF task-level retrieval evidence",
+                        data=record,
+                        source=record.get("url") or "local parsed-document index",
+                    )
+                )
+                continue
+
+            prior_hits = list(existing.data.get("retrieval_hits") or [])
+            known_chunk_ids = {
+                str(hit.get("chunk_id"))
+                for hit in prior_hits
+                if isinstance(hit, dict) and hit.get("chunk_id")
+            }
+            for hit in record.get("retrieval_hits") or []:
+                if isinstance(hit, dict) and str(hit.get("chunk_id")) not in known_chunk_ids:
+                    prior_hits.append(hit)
+                    known_chunk_ids.add(str(hit.get("chunk_id")))
+            for key, value in record.items():
+                if key in {"content", "retrieval_hits", "locator", "query"}:
+                    continue
+                if value is not None and existing.data.get(key) is None:
+                    existing.data[key] = value
+            retrieval_queries = list(existing.data.get("retrieval_queries") or [])
+            query = str(record.get("query") or "").strip()
+            if query and query not in retrieval_queries:
+                retrieval_queries.append(query)
+            if retrieval_queries:
+                existing.data["retrieval_queries"] = retrieval_queries
+            existing.data["retrieval_hits"] = prior_hits
+            existing.data["content"] = "\n\n".join(
+                f"[第{hit.get('page_start')}页｜{hit.get('chunk_id')}]\n{hit.get('text')}"
+                for hit in prior_hits
+            )
+            existing.data["locator"] = "；".join(
+                f"第{hit.get('page_start')}页/{hit.get('chunk_id')}" for hit in prior_hits
+            )
+
+        approved_evidence = [
+            item.data for item in self.memory.get_collect_data() if item.source_id
+        ]
+        self.code_executor.set_variable("approved_evidence", approved_evidence)
+        return returned_records
 
     async def _prepare_init_prompt(self, input_data: dict) -> list[dict]:
         task = input_data.get('task')

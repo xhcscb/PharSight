@@ -11,6 +11,7 @@ on the resulting ``Future`` — safe from any thread, synchronous or otherwise.
 
 import asyncio
 import threading
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Coroutine
 
 
@@ -48,7 +49,13 @@ class AsyncBridge:
             If the coroutine does not complete within ``self._timeout`` seconds.
         """
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=self._timeout)
+        try:
+            return future.result(timeout=self._timeout)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(
+                f"Async tool execution exceeded {self._timeout}s and was cancelled"
+            ) from exc
 
     def shutdown(self):
         """Stop the background loop and join the thread.

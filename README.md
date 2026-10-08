@@ -1,7 +1,7 @@
 # Pharsight：基于 FinSight 的医药投研智能体
 
 > [!IMPORTANT]
-> **项目状态：V1 医药化主流程已实现，等待真实环境端到端验收。**Pharsight 是以 FinSight 提交 `8fc5bce28ac201c713219a47d30367c6a84342f4` 为基线、保留完整历史的独立 GPL-3.0 派生项目。当前已实现医药公司/行业双模式、Serper 联网发现与网页证据规范化、受控证据清单、医药提示词与报告大纲、截止日过滤及精确引用校验；尚未完成 Python 3.11 下的真实模型全流程、领域人工复核、官方数据连接器和图检索验收。
+> **项目状态：V1 公司模式技术闭环已跑通，研究质量仍待验收。**Pharsight 是以 FinSight 提交 `8fc5bce28ac201c713219a47d30367c6a84342f4` 为基线、保留完整历史的独立 GPL-3.0 派生项目。当前已实现医药公司/行业双模式、联网发现、整本 PDF 解析与分页分块、按任务检索、受控证据清单、医药提示词与报告大纲、截止日过滤及精确引用校验；真实 189 页年报已生成 11 节公司研报。尚未完成 Python 3.11、多来源/行业案例、领域人工复核、官方数据连接器和图检索验收。
 
 项目入口：[V1 最小闭环](docs/v1/README.md) · [项目管理](docs/PROJECT_MANAGEMENT.md) · [架构与证据规范](docs/ARCHITECTURE.md) · [上游 FinSight](https://github.com/RUC-NLPIR/FinSight)
 
@@ -12,7 +12,7 @@ Pharsight 面向两种中文研究模式：
 - **A/H 股医药行业研究：**市场边界、政策支付、技术与管线、竞争格局、催化剂和风险。
 - **A/H 股上市医药公司研究：**公司披露、财务、产品和适应症、临床及监管进度、竞争、估值假设和风险。
 
-近期优先以最小改动跑通 FinSight 的 `DataCollector → DataAnalyzer → ReportGenerator` 主流程：DataCollector 默认用 Serper 发现公开网页并打开正文，成功抓取且满足截止时间的页面转成稳定 `WEB-*` 证据；也可叠加受控清单中的一手文件。随后完成医药分析和带精确来源编号的中文 Markdown 报告。首例仍应收窄为一家上市公司、一个核心药物和一个适应症。文档解析、Claim–Evidence 构图及 Graph/Hybrid 检索沿用同一证据契约继续演进。
+近期优先以最小改动跑通 FinSight 的 `DataCollector → DataAnalyzer → ReportGenerator` 主流程：DataCollector 默认用 Serper 发现公开网页并打开正文，成功抓取且满足截止时间的页面转成稳定 `WEB-*` 证据；PDF 整本解析一次后建立页级持久索引，各采集任务只取相关文本块，也可叠加受控清单中的一手文件。随后完成医药分析和带精确来源编号的中文 Markdown 报告。Claim–Evidence 构图及 Graph/Hybrid 检索将沿用现有文档、页、块和来源编号契约继续演进。
 
 每条重要结论必须区分来源事实、确定性计算、明确假设和模型判断，保留来源及日期、单位、口径和截止时间。Pharsight 仅辅助投资研究，不提供投资建议或医疗建议。
 
@@ -28,7 +28,7 @@ FinSight 是面向通用金融深度研究的多智能体系统：采集结构�
 | Report Generator | 大纲、章节、排版及 DOCX/PDF | 已增加双模式中文大纲、Markdown 输出、精确引用和声明校验 |
 | IndexBuilder / 原有引用处理 | 工具结果和报告来源的语义匹配 | 医药模式改走精确来源 ID；通用金融模式保留原兼容路径 |
 
-上述能力已进入代码和自动化测试，但“实现”不等于“研究结论已验收”。真实模型、真实资料和 Python 3.11 环境仍须按项目管理文档完成端到端验证。上游源码及扩展说明见 [进阶使用指南](docs/ADVANCED_USAGE.md)。
+上述能力已进入代码和自动化测试，并已用真实模型和单份 189 页年报完成公司模式技术闭环，但“实现”不等于“研究结论已验收”。多来源、行业模式、领域复核和 Python 3.11 环境仍须按项目管理文档完成端到端验证。上游源码及扩展说明见 [进阶使用指南](docs/ADVANCED_USAGE.md)。
 
 ## 当前路线图
 
@@ -38,7 +38,7 @@ FinSight 是面向通用金融深度研究的多智能体系统：采集结构�
 | V1 医药化纵向切片 | 双模式、受控证据、三段式主流程、精确引用和 Markdown 报告 | 待审 |
 | M1 可复现基线 | Python 3.11 环境、上游测试和无密钥冒烟路径 | 待办 |
 | M2 医药证据工具 | 统一清单工具已实现；监管、试验、文献、医保/集采及披露连接器 | 进行中 |
-| M3 双模式流程 | 行业与公司配置、提示词和模板已实现；受控案例待验收 | 进行中 |
+| M3 双模式流程 | 公司完整大纲技术闭环已跑通；行业案例与领域质量待验收 | 进行中 |
 | M4 领域分析 | 管线、竞争、财务估值、催化剂和风险 | 待办 |
 | M5 评测演示 | 事实、引用、复现及 A/H/行业案例 | 待办 |
 
@@ -47,7 +47,7 @@ V1 横跨 M1～M3，以最小可验证切片优先，不代表这些完整里程
 ## 运行 Pharsight V1
 
 > [!WARNING]
-> Python 3.11 是项目标准；当前改动只在本机 Python 3.12 上完成离线单元测试，尚未记录真实 Serper/模型端到端成功。真实调用会消耗 Serper 与模型额度。首次运行保持图表和 DOCX/PDF 关闭，只生成 Markdown，并确保网页及资料使用符合服务条款。
+> Python 3.11 是项目标准；当前真实公司报告在本机 Python 3.12 上完成，不能替代标准环境验收，也尚未验证 Serper 实时发现到完整报告的全过程。真实调用会消耗 Serper、模型与 OCR 额度。首次运行保持图表和 DOCX/PDF 关闭，只生成 Markdown，并确保网页及资料使用符合服务条款。
 
 ### 环境准备
 
@@ -102,7 +102,9 @@ output_dir: "./outputs/pharma_company"
 outline_template_path: "src/template/pharma_company_outline_zh.md"
 ```
 
-Serper 只负责发现候选页面；必须实际打开并成功抓取正文后，页面才会生成稳定 `WEB-*` 来源编号。搜索结果摘要不能进入事实链。若使用本地清单，为每份资料分配 `S001` 类编号并填写完整元数据，规范见 [示例清单](docs/example_configs/pharma_evidence_manifest.yaml)。运行目录仍不得提交。
+Serper 只负责发现候选页面；必须实际打开并成功抓取正文后，页面才会生成稳定 `WEB-*` 来源编号。搜索结果摘要不能进入事实链。搜索命中的 PDF 会在打开时受限下载，优先使用 PaddleOCR 解析，未配置 PaddleOCR 时文本型 PDF 回退到 pdfplumber；解析成功后才进入证据链。若使用本地清单，为每份资料分配 `S001` 类编号并填写完整元数据，规范见 [示例清单](docs/example_configs/pharma_evidence_manifest.yaml)。运行目录仍不得提交。
+
+PaddleOCR 凭据只能写在被忽略的 `.env` 中。AI Studio 方式设置 `PADDLEOCR_ACCESS_TOKEN`；百度智能云方式设置 `PADDLEOCR_API_KEY` 和 `PADDLEOCR_SECRET_KEY`。OCR 文本属模型解析结果，重大结论仍需回看原 PDF 页码复核。
 
 ### 启动
 

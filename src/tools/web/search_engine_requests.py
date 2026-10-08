@@ -101,11 +101,9 @@ class BochaSearch(Tool):
 
         self.backend = 'requests'
         self.type = 'tool_search'
-        api_key = os.getenv("BOCHAAI_API_KEY", "")
-        if not api_key:
-            print("Warning: BOCHAAI_API_KEY is not set; BochaSearch requests may fail.")
+        self.api_key = os.getenv("BOCHAAI_API_KEY", "")
         self.headers = {
-            'Authorization': f'Bearer {api_key}',
+            'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json'
         }
 
@@ -119,6 +117,10 @@ class BochaSearch(Tool):
         Returns:
             A list of ToolResult entries populated from the API payload.
         """
+        if not self.api_key:
+            raise RuntimeError(
+                "BOCHAAI_API_KEY is required when the Bocha search provider is enabled"
+            )
         async with httpx.AsyncClient() as client:
             url = "https://api.bochaai.com/v1/web-search"
             payload = json.dumps({
@@ -167,8 +169,6 @@ class SerperSearch(Tool):
         self.backend = 'requests'
         self.type = 'tool_search'
         self.api_key = os.getenv("SERPER_API_KEY", "")
-        if not self.api_key:
-            print("Warning: SERPER_API_KEY is not set; SerperSearch requests may fail.")
         self.headers = {
             'X-API-KEY': self.api_key,
             'Content-Type': 'application/json'

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_report import _build_research_query
+from run_report import _build_research_query, _resolve_model_name
 from src.config.config import Config
 
 
@@ -143,3 +143,34 @@ def test_minimal_pharma_example_does_not_require_optional_model_env(monkeypatch)
     assert [item["model_name"] for item in config.config["llm_config_list"]] == [
         "test-model"
     ]
+
+
+def test_disabled_optional_model_ignores_unrelated_environment(monkeypatch):
+    monkeypatch.setenv("VLM_MODEL_NAME", "unconfigured-vlm")
+    config = SimpleNamespace(config={}, llm_dict={})
+
+    assert _resolve_model_name(config, "vlm_model_name", "VLM_MODEL_NAME", required=False) is None
+
+
+def test_config_creates_isolated_llm_clients():
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    config = Config.__new__(Config)
+    config.config = {
+        "llm_config_list": [
+            {
+                "model_name": "test-model",
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "generation_params": {"temperature": 0.2},
+            }
+        ]
+    }
+
+    first = config.create_llm("test-model", llm_class=FakeLLM)
+    second = config.create_llm("test-model", llm_class=FakeLLM)
+
+    assert first is not second
+    assert first.kwargs == second.kwargs

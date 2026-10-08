@@ -1,0 +1,1286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "医药投研 Claim–Evidence Graph Schema v1",
+  "description": "结构校验规则；引用完整性、端点类型、证据语义和身份合并还需运行时检查，详见说明。",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "alias_library": {
+      "type": "object",
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sheet": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "filename",
+        "sheet",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/document"
+          },
+          {
+            "$ref": "#/$defs/passage"
+          },
+          {
+            "$ref": "#/$defs/claim"
+          },
+          {
+            "$ref": "#/$defs/entity"
+          }
+        ]
+      },
+      "minItems": 1
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "minItems": 0
+    },
+    "entity_links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entity_link"
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "schema_version",
+    "alias_library",
+    "nodes",
+    "edges",
+    "entity_links"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "quantity": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "passage_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "field_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "passage_id",
+        "quote"
+      ],
+      "additionalProperties": false
+    },
+    "verification": {
+      "type": "object",
+      "properties": {
+        "gate_status": {
+          "enum": [
+            "not_checked",
+            "passed",
+            "needs_review",
+            "rejected"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "gate_status",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "document": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_type": {
+          "const": "Document"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_uri": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publication_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_kind": {
+          "enum": [
+            "report",
+            "paper",
+            "announcement",
+            "registry",
+            "excerpt",
+            "other"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "node_type",
+        "title",
+        "source_name",
+        "source_uri",
+        "publication_date",
+        "source_kind"
+      ],
+      "additionalProperties": false
+    },
+    "passage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_type": {
+          "const": "Passage"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "locator": {
+          "type": "object",
+          "properties": {
+            "page": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "section": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "block_label": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "page",
+            "section",
+            "block_label"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "node_type",
+        "text",
+        "locator"
+      ],
+      "additionalProperties": false
+    },
+    "entity": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_type": {
+          "const": "Entity"
+        },
+        "entity_type": {
+          "enum": [
+            "Drug",
+            "Company",
+            "Trial",
+            "Target",
+            "Indication"
+          ]
+        },
+        "canonical_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity_status": {
+          "enum": [
+            "registered",
+            "provisional"
+          ]
+        },
+        "external_ids": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "namespace",
+              "value"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "id",
+        "node_type",
+        "entity_type",
+        "canonical_name",
+        "identity_status",
+        "external_ids"
+      ],
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "properties": {
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approximate": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value_nature": {
+          "enum": [
+            "reported",
+            "estimated",
+            "not_stated"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "value",
+        "unit",
+        "approximate",
+        "value_nature",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "intervention_spec": {
+      "type": "object",
+      "properties": {
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arm_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/quantity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frequency": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "entity_id",
+        "arm_id",
+        "dose",
+        "frequency",
+        "route"
+      ],
+      "additionalProperties": false
+    },
+    "result_report": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "$ref": "#/$defs/result"
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "population": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "comparator_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intervention_specs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/intervention_spec"
+          },
+          "minItems": 0
+        },
+        "regimen_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timepoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/quantity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "estimand": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "placebo_adjusted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uncertainty_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data_cutoff": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "result",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "comparison": {
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "comparison_design": {
+          "enum": [
+            "head_to_head",
+            "cross_trial",
+            "other",
+            "not_stated"
+          ]
+        },
+        "conclusion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "outcome",
+        "comparison_design",
+        "conclusion",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "event_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event_date_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normalized_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stage_or_status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "event_kind",
+        "event_date_text",
+        "normalized_date",
+        "stage_or_status",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "forecast": {
+      "type": "object",
+      "properties": {
+        "forecast_content": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_time_text": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normalized_target_time": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "predicted_quantity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/quantity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "forecast_content",
+        "target_time_text",
+        "normalized_target_time",
+        "predicted_quantity",
+        "conditions",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "evaluation": {
+      "type": "object",
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "minLength": 1
+        },
+        "judgment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "dimension",
+        "judgment",
+        "scope",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "relation_assertion": {
+      "type": "object",
+      "properties": {
+        "predicate": {
+          "enum": [
+            "targets",
+            "developed_by",
+            "sponsored_by",
+            "studies_drug",
+            "combined_with"
+          ]
+        },
+        "polarity": {
+          "enum": [
+            "positive",
+            "negative",
+            "uncertain"
+          ]
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "predicate",
+        "polarity",
+        "conditions",
+        "qualifiers"
+      ],
+      "additionalProperties": false
+    },
+    "claim": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "node_type": {
+          "const": "Claim"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "domain": {
+          "enum": [
+            "clinical",
+            "development_regulatory",
+            "commercial_investment",
+            "mechanism"
+          ]
+        },
+        "claim_type": {
+          "enum": [
+            "result_report",
+            "comparison",
+            "event",
+            "forecast",
+            "evaluation",
+            "relation_assertion"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "minItems": 1
+        },
+        "attributes": {},
+        "verification": {
+          "$ref": "#/$defs/verification"
+        }
+      },
+      "required": [
+        "id",
+        "node_type",
+        "text",
+        "domain",
+        "claim_type",
+        "evidence",
+        "attributes",
+        "verification"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "result_report"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/result_report"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "comparison"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/comparison"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "event"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/event"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "forecast"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/forecast"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "evaluation"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/evaluation"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_type": {
+                "const": "relation_assertion"
+              }
+            },
+            "required": [
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "$ref": "#/$defs/relation_assertion"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "domain": {
+                "const": "clinical"
+              },
+              "claim_type": {
+                "const": "result_report"
+              }
+            },
+            "required": [
+              "domain",
+              "claim_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "required": [
+                  "population",
+                  "comparator_text",
+                  "intervention_specs",
+                  "regimen_text",
+                  "timepoint",
+                  "estimand",
+                  "placebo_adjusted",
+                  "basis_text",
+                  "uncertainty_text",
+                  "data_cutoff"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relation": {
+          "enum": [
+            "contains",
+            "expresses",
+            "has_intervention",
+            "has_comparator",
+            "in_trial",
+            "has_population_condition",
+            "announced_by",
+            "has_subject",
+            "has_object",
+            "compares_result",
+            "uses_as_basis",
+            "contradicts",
+            "supersedes",
+            "targets",
+            "developed_by",
+            "sponsored_by",
+            "studies_drug",
+            "combined_with"
+          ]
+        },
+        "origin": {
+          "enum": [
+            "structural",
+            "extracted",
+            "derived",
+            "reviewed"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "minItems": 0
+        },
+        "asserted_by_claim_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "attributes": {
+          "type": "object",
+          "properties": {
+            "comparison_index": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "target",
+        "relation",
+        "origin",
+        "evidence",
+        "asserted_by_claim_ids",
+        "attributes"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "relation": {
+                "const": "compares_result"
+              }
+            },
+            "required": [
+              "relation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "attributes": {
+                "required": [
+                  "comparison_index"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relation": {
+                "enum": [
+                  "targets",
+                  "developed_by",
+                  "sponsored_by",
+                  "studies_drug",
+                  "combined_with"
+                ]
+              }
+            },
+            "required": [
+              "relation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "origin": {
+                "const": "derived"
+              },
+              "asserted_by_claim_ids": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "relation": {
+                "enum": [
+                  "contradicts",
+                  "supersedes"
+                ]
+              }
+            },
+            "required": [
+              "relation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "origin": {
+                "const": "reviewed"
+              },
+              "attributes": {
+                "required": [
+                  "reason"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "entity_link": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passage_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mention_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "link_status": {
+          "enum": [
+            "resolved",
+            "needs_review",
+            "unresolved"
+          ]
+        },
+        "match_method": {
+          "enum": [
+            "exact_name",
+            "exact_alias",
+            "normalized_match",
+            "context_review",
+            "manual",
+            "unmatched"
+          ]
+        },
+        "mapping_kind": {
+          "enum": [
+            "same_entity",
+            "brand_of",
+            "related_to",
+            "unknown"
+          ]
+        },
+        "alias_row": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 2
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "claim_id",
+        "passage_id",
+        "mention_text",
+        "entity_id",
+        "link_status",
+        "match_method",
+        "mapping_kind",
+        "alias_row",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

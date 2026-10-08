@@ -9,6 +9,16 @@ from urllib.parse import urlparse
 from src.tools.base import ToolResult
 
 
+def stable_web_source_id(url: str, document_hash: str) -> str:
+    """Return the stable citation ID shared by web snapshots and PDF indexes."""
+    normalized_url = str(url or "").strip()
+    stable_hash = str(document_hash or "").strip().lower()
+    if not normalized_url or not stable_hash:
+        raise ValueError("Stable web source IDs require a URL and document hash")
+    url_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
+    return f"WEB-{url_hash[:10].upper()}-{stable_hash[:8].upper()}"
+
+
 def _parse_timestamp(value: str | None, fallback_tz=None) -> datetime | None:
     if not value:
         return None
@@ -35,6 +45,14 @@ def build_web_evidence(
     as_of: str,
     published_at: str | None = None,
     retrieved_at: str | None = None,
+    source_type: str = "web_page",
+    parser: str | None = None,
+    document_hash: str | None = None,
+    page_count: int | None = None,
+    final_url: str | None = None,
+    byte_size: int | None = None,
+    document_type: str | None = None,
+    reporting_period: str | None = None,
 ) -> ToolResult | None:
     """Build one stable evidence snapshot from a successfully browsed page.
 
@@ -64,8 +82,8 @@ def build_web_evidence(
 
     normalized_url = url.strip()
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    url_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
-    source_id = f"WEB-{url_hash[:10].upper()}-{content_hash[:8].upper()}"
+    stable_document_hash = document_hash or content_hash
+    source_id = stable_web_source_id(normalized_url, stable_document_hash)
     publisher = urlparse(normalized_url).netloc.lower() or "未知网页发布者"
     limitations = [
         "网页内容为运行时抓取快照，应优先与监管、交易所或发行人一手材料交叉核验。"
@@ -75,33 +93,46 @@ def build_web_evidence(
 
     record = {
         "source_id": source_id,
-        "source_type": "web_page",
+        "source_type": source_type,
         "publisher": publisher,
         "title": title.strip() or normalized_url,
         "published_at": published.isoformat() if published else None,
         "published_at_raw": published_at,
         "updated_at": None,
         "retrieved_at": retrieved.isoformat(),
-        "reporting_period": None,
+        "reporting_period": reporting_period,
         "url": normalized_url,
+        "final_url": final_url or normalized_url,
         "external_id": None,
         "local_path": None,
-        "locator": "网页正文抓取快照",
+        "locator": (
+            f"PDF 解析文本，共 {page_count} 页" if source_type == "web_pdf" and page_count else
+            "PDF 解析文本" if source_type == "web_pdf" else "网页正文抓取快照"
+        ),
         "language": None,
         "reliability_tier": "secondary_web",
         "evidence_label": "sourced_fact",
         "cutoff_eligible": True,
         "entity_keys": {},
         "limitations": limitations,
-        "notes": "由 Serper 发现并在 Deep Search 中打开页面后自动规范化。",
-        "document_hash": content_hash,
+        "notes": (
+            f"由搜索引擎发现，Deep Search 下载并使用 {parser or '未知解析器'} 解析。"
+            if source_type == "web_pdf"
+            else "由搜索引擎发现并在 Deep Search 中打开页面后自动规范化。"
+        ),
+        "document_hash": stable_document_hash,
+        "content_hash": content_hash,
+        "parser": parser,
+        "page_count": page_count,
+        "byte_size": byte_size,
+        "document_type": document_type,
         "content": content,
     }
     return ToolResult(
         name=f"{source_id} {record['title']}",
         description=(
-            f"web_page | {publisher} | retrieved {record['retrieved_at']} | "
-            "locator 网页正文抓取快照"
+            f"{source_type} | {publisher} | retrieved {record['retrieved_at']} | "
+            f"locator {record['locator']}"
         ),
         data=record,
         source=normalized_url,

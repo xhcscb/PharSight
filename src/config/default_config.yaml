@@ -39,6 +39,8 @@ evidence_selection_max_k: 12
 # the latest turns are preserved.
 max_action_result_chars: 20000
 max_history_chars: 300000
+deep_search_max_iterations: 8
+code_execution_timeout: 360
 
 # Per-service rate limits (seconds between consecutive calls)
 rate_limits:

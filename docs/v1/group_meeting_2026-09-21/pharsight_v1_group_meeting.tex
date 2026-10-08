@@ -2,21 +2,15 @@
 \documentclass[aspectratio=169,10pt]{ctexbeamer}
 
 \usetheme[numbering=fraction,progressbar=frametitle,block=fill]{metropolis}
-\metroset{sectionpage=progressbar}
-
-\usepackage{underscore}
 \usepackage{booktabs}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning}
-\usepackage{pgfplots}
-\pgfplotsset{compat=1.18}
 
 \definecolor{phblue}{HTML}{1F4E79}
 \definecolor{phcyan}{HTML}{2E75B6}
 \definecolor{phred}{HTML}{B03A2E}
 \definecolor{phgreen}{HTML}{3D7A3D}
 \definecolor{phgray}{HTML}{595959}
-\definecolor{phamber}{HTML}{9C6500}
 
 \setbeamercolor{frametitle}{fg=phblue}
 \setbeamercolor{title separator}{fg=phcyan}
@@ -31,7 +25,7 @@
 
 \setbeamertemplate{itemize items}[circle]
 \setbeamertemplate{navigation symbols}{}
-\renewcommand{\arraystretch}{1.15}
+\renewcommand{\arraystretch}{1.2}
 
 \setbeamerfont{title}{size=\large,series=\bfseries}
 \setbeamerfont{subtitle}{size=\normalsize}
@@ -46,7 +40,6 @@
     \usebeamertemplate*{title separator}
     \ifx\beamer@shortauthor\@empty\else\usebeamertemplate*{author}\fi
     \ifx\insertdate\@empty\else\usebeamertemplate*{date}\fi
-    \ifx\insertinstitute\@empty\else\usebeamertemplate*{institute}\fi
     \vfill
     \vspace*{1mm}
   \end{minipage}
@@ -54,647 +47,139 @@
 \makeatother
 
 \title{Pharsight V1 进展汇报}
-\subtitle{FinSight 上游复盘 · 医药化实现 · 后续改进方向}
+\subtitle{FinSight 反思与 Pharsight 进展}
 \author{Pharsight 项目组}
-\date{2026 年 9 月 21 日 · 组会汇报}
+\date{2026 年 9 月 23 日}
 
 \begin{document}
 
 \maketitle
 
-\begin{frame}{汇报提纲}
-\begin{enumerate}
-  \item 背景与目标：为什么在 FinSight 基线上做医药投研
-  \item FinSight 漏洞发现与修复：两次真实端到端运行复盘
-  \item 架构讨论与设计结论：7 条讨论的要点
-  \item Pharsight V1 实现：已完成什么、验证到什么程度
-  \item 后续改进方向：分阶段计划与证据图谱检索设计
-  \item 结论、任务与风险
-\end{enumerate}
-\end{frame}
-
-\section{一、背景与目标}
-
-\begin{frame}{Pharsight：在 FinSight 基线上做医药投研}
-\begin{columns}[T]
-\begin{column}{0.53\textwidth}
-\begin{block}{使命}
-在 FinSight 多智能体基础上，建设\textbf{可复现}的 A/H 医药投研智能体，服务高校研究与演示。
-\end{block}
+\begin{frame}{项目定位与目标}
 \begin{itemize}
-  \item 两种模式：医药行业研究、上市医药公司研究
-  \item 中文输出；全球临床、监管与文献作为补充证据
-  \item 报告保留\textbf{可核查证据链}：来源、日期、口径、定位
-  \item 投研辅助工具，不提供医疗建议或收益承诺
+  \item Pharsight：基于 FinSight 的 A/H 医药投研智能体，面向高校研究与演示
+  \item 两种模式：医药行业研究、上市医药公司研究；中文输出
+  \item 仅作投研辅助，不构成投资或医疗建议
 \end{itemize}
-\end{column}
-\begin{column}{0.43\textwidth}
-\begin{block}{基线约束}
-\begin{itemize}
-  \item 上游：RUC-NLPIR/FinSight
-  \item 固定提交：\texttt{8fc5bce}
-  \item 许可证：GPL-3.0
-  \item 标准运行时：Python 3.11
-  \item \texttt{FinSight/} 只读；改动全部位于 \texttt{pharsight/}
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{V1 范围：先跑通受控主流程}
 \begin{block}{V1 目标}
-不更换 FinSight 的共享 Memory 与三段式编排，先把主流程改写为医药投研流程并跑通：
-\texttt{研究任务书 → DataCollector 采集 → DataAnalyzer 分析 → ReportGenerator 生成 → 发布校验}
+保留 FinSight 三段式主干，实现受控、可审计的医药投研流程：
+\texttt{研究任务书 → 采集 → 分析 → 报告 → 发布校验}
 \end{block}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\textbf{本阶段做}
 \begin{itemize}
-  \item 双模式配置与领域提示词
-  \item 受控资料包（来源编号 + 元数据）
-  \item 中文公司/行业报告大纲
-  \item 精确引用 \texttt{[Source:S001]} 与失败关闭
-  \item 无网络单元测试
+  \item 上游基线 \texttt{8fc5bce}；标准运行时 Python 3.11
 \end{itemize}
-\end{column}
-\begin{column}{0.48\textwidth}
-\textbf{本阶段不做}
-\begin{itemize}
-  \item 不替换 Memory 与优先级编排
-  \item 不引入图数据库或新 RAG 框架
-  \item 不接入全部官方数据源
-  \item 不做图表、估值与成功率模型
-  \item 不宣称医学审评或发布级质量
-\end{itemize}
-\end{column}
-\end{columns}
 \end{frame}
 
-\section{二、FinSight 漏洞发现与修复}
-
-\begin{frame}{复盘方法：两次真实端到端运行}
-\begin{itemize}
-  \item 对象：九安医疗（002432），\texttt{financial\_company}，中文
-  \item 运行 1：2026-09-18 首跑（约 40 分钟，结束后进程卡死）
-  \item 运行 2：2026-09-20 授权修复后干净重跑（约 16 分钟，退出卡死复现）
-  \item 证据：32{,}620 行日志、报告产物、\texttt{memory.pkl}、54 个检查点目录；重跑新增 28{,}523 行
-\end{itemize}
-\begin{block}{证据分级（贯穿全部结论）}
-\begin{description}
-  \item[源码事实] 附上游固定基线 \texttt{文件:行号}，可复核
-  \item[运行实证] 来自日志与产物的可计数事实
-  \item[推断] 对原因与影响的解释，显式标注，不作为事实
-\end{description}
-\end{block}
-\end{frame}
-
-\begin{frame}{首跑（2026-09-18）：量化结果}
+\begin{frame}{FinSight 实测：四次运行}
 \centering
-\footnotesize
-\begin{tabular}{ll}
+\small
+\begin{tabular}{lll}
 \toprule
-指标 & 结果 \\
+时间 & 运行 & 主要结果 \\
 \midrule
-采集任务 & 12/12 保存 \alert{0 条数据} \\
-点击动作 & 启动 124 / 成功 2 / 失败 123（其中越界报错 122 次） \\
-代码执行超时 & 14 次（每次 120 秒，形成孤儿任务） \\
-报告引用 & 18 条，含\textbf{错误主体}（603927）与\textbf{无关来源}（工商银行年报） \\
-报告图表 & 3 张；图片耗尽告警 21 次 \\
-退出 & 主流程完成后卡死超过 45 分钟 \\
-\midrule
-总体判断 & 排版形式专业，但\alert{证据链严重不成立} \\
+09-18 & 九安医疗首跑 & 采集 0/12；引用错误；进程未退出 \\
+09-20 & 修复后重跑 & 错误归零；抓取仍失败；出现跨主体污染 \\
+09-22 & 恒瑞年报调试 & 三章节报告闭环，退出码 0 \\
+09-22 & 恒瑞 189 页完整运行 & 489 块页级索引；11 节报告 \\
 \bottomrule
 \end{tabular}
+\vspace{0.8em}
+\begin{block}{结论}
+编排与写作可复用；证据链各环节需要重建。
+\end{block}
 \end{frame}
 
-\begin{frame}{首跑：五个不可信环节}
+\begin{frame}{FinSight 实测：五类问题}
 \begin{enumerate}
-  \item \alert{采集层失效}：模型输出 DeepSeek 原生工具调用标记 \texttt{DSML}，而解析器只识别 XML 标签；无匹配即回退 final，采集 Agent 一轮即终止
-  \item \alert{抓取近乎全失败}：\texttt{click\_result[0]} 越界 122 次；DeepSearch 退化为“搜索摘要即证据”，从未点开的链接也能进入可引用来源清单
-  \item \alert{引用不可审计}：错误主体与无关来源；自由文本与编号引用混用；没有“主张 → 证据”映射
-  \item \alert{运行时缺陷}：代码执行线程内嵌套 \texttt{asyncio.run}，超时不可取消，产生孤儿任务；解释器退出等待线程导致卡死
-  \item \alert{合规缺口}：报告有风险提示，但没有免责声明与非医疗建议声明
+  \item \alert{协议}：不兼容模型原生调用格式，任务静默终止
+  \item \alert{状态}：缓存与复用导致检索缺失或重复
+  \item \alert{证据}：来源为自由文本，无定位与主张映射
+  \item \alert{运行时}：嵌套事件循环导致进程无法退出
+  \item \alert{质量}：任务完成不等于产物完整，缺少必要声明
 \end{enumerate}
+\begin{exampleblock}{可复用部分}
+编排与检查点、共享 Memory、确定性计算、模板化写作。
+\end{exampleblock}
 \end{frame}
 
-\begin{frame}{首跑：值得保留的骨架}
+\begin{frame}{对 Pharsight 的设计启示}
+\begin{itemize}
+  \item \textbf{精确引用}：只允许真实来源编号，未知引用阻断发布
+  \item \textbf{完整证据}：原文整本解析、分页分块，保留父来源与页码定位
+  \item \textbf{失败关闭}：协议、截止日、章节完整性与声明的确定性校验
+  \item \textbf{保留主干}：不替换编排，检索后端可替换
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Pharsight 进展：完整 PDF 技术闭环}
 \begin{columns}[T]
 \begin{column}{0.5\textwidth}
-\begin{block}{编排与流程}
+\begin{block}{已完成}
 \begin{itemize}
-  \item 端到端自主闭环，约 40 分钟产出完整中文研报
-  \item 优先级分组、组内并发、组间串行
-  \item 每轮动作保存检查点，支持断点续跑（本次 94 次持久化）
-  \item 共享 Memory 作为跨阶段“黑板”
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.46\textwidth}
-\begin{block}{分析与写作}
-\begin{itemize}
-  \item DataAnalyzer 内确定性 Python 计算
-  \item 图表 + VLM 复核设计（本次未走通）
-  \item LLM 层 429/5xx 重试与上下文降级
-  \item 大纲模板驱动写作，版式接近证券研报
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\vspace{0.4em}
-\centering
-\textbf{结论：编排与写作骨架可复用；采集、抓取、引用、运行时、合规五个环节不可信}
-\end{frame}
-
-\begin{frame}{经授权修复（2026-09-20，未触碰 Git 历史）}
-\begin{columns}[T]
-\begin{column}{0.49\textwidth}
-\begin{block}{第一批：可观测性与治理}
-\begin{itemize}
-  \item 点击空结果不再裸索引，失败显式化
-  \item 抓取逐 URL 捕获异常，记录真实原因
-  \item 嵌套 \texttt{asyncio.run} 改为 \texttt{AsyncBridge}
-  \item 代码执行线程治理与收尾回收
-  \item 引用实体/股票代码校验，输出 \texttt{citation\_audit.json}
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.49\textwidth}
-\begin{block}{第二批：协议与内容护栏}
-\begin{itemize}
-  \item DSML 归一化为规范动作；未知格式返回 \texttt{<protocol\_error>}
-  \item 提示词示例去实体化 + 生成后实体 lint
-  \item 图表占位清理与图片路径修正
-  \item daemon 线程 + \texttt{os.\_exit} 退出兜底
-  \item UTF-8 日志；引用去重与来源分级
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\vspace{0.3em}
-\footnotesize 验证：涉及文件全部语法编译通过；\texttt{FinSight} HEAD 仍为 \texttt{8fc5bce}，Git 索引无变更。
-\end{frame}
-
-\begin{frame}{重跑对比：修复效果与残留}
-\begin{columns}[T]
-\begin{column}{0.55\textwidth}
-\scriptsize
-\begin{tabular}{lcc}
-\toprule
-指标 & 首跑 & 重跑 \\
-\midrule
-运行时长 & $\approx$40 min & $\approx$16 min \\
-ERROR 数 & \alert{122} & \textbf{0} \\
-点击成功/尝试 & 2/124 & 0/18 \\
-采集保存 & 12$\times$0 & 12$\times$0 \\
-含 DSML 行 & 412 & 682 \\
-引用审计（解/未/拒） & 无能力 & 129/2/3 \\
-引用错误主体 & 有 & 无 \\
-报告图片 & 3 & 0 \\
-跨主体污染 & 未发现 & 有（BYD 整章） \\
-退出卡死 & 有 & 有 \\
-\bottomrule
-\end{tabular}
-\end{column}
-\begin{column}{0.43\textwidth}
-\centering
-\begin{tikzpicture}[scale=0.72,transform shape]
-\begin{axis}[
-  ybar,bar width=4.5pt,
-  width=6.4cm,height=4.4cm,
-  symbolic x coords={ERROR,点击成功,DSML行,报告图片},
-  xtick=data,
-  x tick label style={font=\tiny,rotate=18,anchor=east},
-  ymin=0,ymax=760,font=\tiny,
-  legend style={font=\tiny,at={(0.5,1.02)},anchor=south,legend columns=2,draw=none,fill=none},
-  ymajorgrids=true,grid style={draw=phgray!25},
-  axis line style={draw=phgray},
-]
-\addplot[fill=phred!55,draw=phred] coordinates {(ERROR,122) (点击成功,2) (DSML行,412) (报告图片,3)};
-\addplot[fill=phcyan!60,draw=phcyan] coordinates {(ERROR,0) (点击成功,0) (DSML行,682) (报告图片,0)};
-\legend{首跑,重跑}
-\end{axis}
-\end{tikzpicture}
-\end{column}
-\end{columns}
-\vspace{0.2em}
-\footnotesize 修复使 ERROR 归零；但点击、图表仍为 0，DSML 输出增多（协议修复在重跑之后实施）。
-\end{frame}
-
-\begin{frame}{残留问题与架构改进方向}
-\footnotesize
-\begin{tabular}{p{0.48\textwidth}p{0.44\textwidth}}
-\toprule
-残留问题 & 改进方向 \\
-\midrule
-环境预检缺失：Playwright 浏览器版本不匹配（需 1243，只有 1217） & 启动预检 + 快速失败 + 修复命令 \\
-动作协议不兼容：重跑仍输出 682 行 DSML & 协议归一化 + 未知格式失败关闭 \\
-提示词示例泄漏：报告出现 BYD 整章（“比亚迪”104 次） & 示例去实体化 + 生成后实体一致性 lint \\
-图表契约断裂：0 张图、12 处占位、模型虚构 26 处引用 & 图表 ID 契约 + 缺图阻断/降级门禁 \\
-退出卡死复现，\texttt{shutdown} 无效 & 可取消执行 + 退出看门狗 \\
-控制台 GBK 编码错误 6 段 & 统一 UTF-8 日志 + 关键指标计数 \\
-引用仍有重复与二手来源 & URL 去重 + 来源分级 + 审计纳入验收 \\
-缺少可执行的运行验收 & 复盘评分表 + 固定案例回归门禁 \\
-\bottomrule
-\end{tabular}
-\end{frame}
-
-\section{三、架构讨论与设计结论}
-
-\begin{frame}{讨论 1--3：Agent 机制、数据链路与预处理}
-\begin{block}{Agent 调用与协议}
-\texttt{BaseAgent} 是统一动作循环而非路由器；顶层调度由代码写死；Agent 间只通过 \texttt{call\_tool} 调用 DeepSearch。工具分支返回数据列表、Agent 分支返回文本，返回形状不一致；Agent 没有参数 schema；异常统一吞成空列表。
-\end{block}
-\begin{block}{DeepSearch 数据链路}
-search 取摘要 → click 仅允许白名单 URL → 正文\textbf{硬截断 6000 字符}（PDF 不保留页码）。权威性只有提示词软约束；接近轮次上限时会把\textbf{从未点开}的链接列为可引用来源。
-\end{block}
-\begin{block}{预处理}
-几乎没有确定性预处理：抓取 → 转文本 → 截断 → 交给 LLM；无去重与日期、单位、币种、期间解析，清洗过程不可复现。
-\end{block}
-\end{frame}
-
-\begin{frame}{讨论 4--5：多层迭代与去重/缓存}
-\begin{columns}[T]
-\begin{column}{0.5\textwidth}
-\begin{block}{六层嵌套迭代}
-\begin{itemize}
-  \item L0 流水线：优先级分组
-  \item \textbf{L1 Agent 动作循环（主引擎）}
-  \item L2 LLM 重试（容错）
-  \item L3 章节写作、L4 图表+VLM（质量迭代）
-  \item L5 DeepSearch 多跳检索（信息覆盖）
+  \item 医药双模式配置、受控清单、领域提示词与中文大纲
+  \item 真实 189 页年报：整本 OCR、489 块页级索引
+  \item 七类研究任务分别检索，页码随证据进入 Memory
+  \item 11 节公司研报，严格引用通过
+  \item 75 项定向单元测试通过
 \end{itemize}
 \end{block}
 \end{column}
 \begin{column}{0.48\textwidth}
-\begin{block}{重复采集与“该搜没搜”}
-\begin{itemize}
-  \item Memory 只追加，无 URL/内容哈希去重
-  \item 同一 URL 可被反复点开，查询可重复
-  \item DeepSearch 默认 \texttt{resume=True}，命中旧检查点\textbf{直接返回缓存}
-  \item Analyzer 全量注入采集结果，相关性检索被注释
-\end{itemize}
-\end{block}
+\begin{alertblock}{未验收}
+Python 3.11 标准环境、多来源覆盖、行业模式、医药领域人工复核。
+\end{alertblock}
+\begin{exampleblock}{样例}
+恒瑞医药 600276.SH；报告 86{,}884 字节；来源编号 \texttt{WEB-56697731BB}。
+\end{exampleblock}
 \end{column}
 \end{columns}
 \end{frame}
 
-\begin{frame}{讨论 6--7：评测体系与黄金报告}
-\begin{columns}[T]
-\begin{column}{0.5\textwidth}
-\begin{block}{论文主张（arXiv 2510.16844）}
-\begin{itemize}
-  \item 20 个目标；9 项指标：事实、信息、呈现三维
-  \item Gemini-2.5-Pro 评委；list-wise 对比；黄金报告锚定约 7 分
-  \item 总分 8.09，领先两类 Deep Research
-  \item 消融：去动态搜索，事实性 7.0 $\rightarrow$ 5.9
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.48\textwidth}
-\begin{block}{局限与医药迁移}
-\begin{itemize}
-  \item 单一 LLM 评委；相对分数；样本仅 20
-  \item 事实性不是 claim 级核验；无截止时间与稳定性检验
-  \item 黄金报告来自券商（二手），存在立场、时点与许可问题
-  \item 医药事实必须回到一手来源；增加临床/监管专属指标与专家盲评
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{从讨论到改进方向}
-\footnotesize
-\begin{tabular}{p{0.44\textwidth}p{0.46\textwidth}}
-\toprule
-问题 & 改进方向 \\
-\midrule
-动作协议无 schema，未知格式静默回退 & 结构化 tool call/result；失败关闭（ADR-007） \\
-来源是自由文本，无定位 & 稳定证据 ID + 快照哈希 + 页码/字符区间 \\
-无实体绑定与期间/单位/币种校验 & 实体注册表 + 口径归一 + 实体一致性 lint \\
-正文截断 6000 字符 & 原文快照 + 分块检索（后续 EvidenceBackend） \\
-重复采集与“该搜没搜” & URL + 内容哈希 + query 去重键；修复 resume 语义 \\
-评测不可证、非 claim 级 & claim 级引用支持率 + 一手来源裁定 + 专家盲评 \\
-运行不可控、退出卡死 & 启动预检 + 可取消执行 + 进程看门狗 \\
-\bottomrule
-\end{tabular}
-\end{frame}
-
-\section{四、Pharsight V1 实现}
-
-\begin{frame}{V1 实现总览：在原主干上完成医药化纵向切片}
+\begin{frame}{技术闭环}
 \begin{center}
 \resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
-  node distance=3.2mm,
+  node distance=3.5mm,
   box/.style={draw=phblue,fill=phblue!8,rounded corners,align=center,
-              font=\scriptsize,inner sep=3pt,minimum height=0.85cm,text width=1.72cm},
-  ar/.style={-{Stealth[length=2mm]},draw=phgray,thick}
+              font=\small,inner sep=4pt,minimum height=1.0cm,text width=2.1cm},
+  ar/.style={-{Stealth[length=2.5mm]},draw=phgray,thick}
 ]
-\node[box] (a) {研究任务书\\与受控清单};
-\node[box,right=of a] (b) {DataCollector\\预载/采集};
-\node[box,right=of b] (c) {Memory\\来源编号+元数据};
-\node[box,right=of c] (d) {DataAnalyzer\\医药分析};
-\node[box,right=of d] (e) {Report\\Generator\\中文 Markdown};
-\node[box,right=of e] (f) {截止日、精确\\引用、声明};
-\draw[ar] (a)--(b); \draw[ar] (b)--(c); \draw[ar] (c)--(d);
-\draw[ar] (d)--(e); \draw[ar] (e)--(f);
+\node[box] (a) {公开 PDF};
+\node[box,right=of a] (b) {PaddleOCR\\整本解析};
+\node[box,right=of b] (c) {页级分块\\与索引};
+\node[box,right=of c] (d) {按任务检索\\页级证据};
+\node[box,right=of d] (e) {分析、写作\\与引用校验};
+\draw[ar] (a)--(b); \draw[ar] (b)--(c); \draw[ar] (c)--(d); \draw[ar] (d)--(e);
 \end{tikzpicture}}
 \end{center}
+\vspace{0.4em}
 \begin{itemize}
-  \item 未更换共享 Memory 与三段式编排；双模式共用同一主干
-  \item 关键原则：证据先标准化为 \texttt{ToolResult}，再进入分析与写作
-  \item 当前状态：实现与离线测试完成，尚未完成真实端到端与领域验收
+  \item 整本仅解析一次；分析与提示词不注入全文
+  \item 引用保留父来源编号，事实定位使用页码与块号
 \end{itemize}
 \end{frame}
 
-\begin{frame}{配置与研究任务书}
-\begin{columns}[T]
-\begin{column}{0.5\textwidth}
-\begin{block}{模式与必填项}
-\begin{itemize}
-  \item \texttt{target\_type}：\texttt{pharma\_company} / \texttt{pharma\_industry}
-  \item 强制：\texttt{target\_name}、\texttt{as\_of}（带时区）、\texttt{jurisdictions}、\texttt{research\_questions}
-  \item 公司模式必须提供证券代码
-  \item 任务书冻结边界：公司、药物、适应症、地区、截止时间
-\end{itemize}
+\begin{frame}{能力边界}
+\begin{block}{已经证明}
+长 PDF 证据可定位、引用可审计，报告生成可技术闭环。
 \end{block}
-\end{column}
-\begin{column}{0.48\textwidth}
-\begin{block}{安全与开关}
-\begin{itemize}
-  \item 输出目录限制在仓库 \texttt{outputs/} 内
-  \item 落盘 \texttt{config.json} 前递归遮蔽密钥字段
-  \item 开关：\texttt{live\_web\_search}、\texttt{enable\_chart}、\texttt{strict\_cutoff}、\texttt{strict\_citations}、\texttt{output\_formats}
-  \item 首次运行：关闭联网与图表，仅输出 Markdown
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{受控证据清单工具：\texttt{pharma\_evidence\_manifest}}
-\begin{columns}[T]
-\begin{column}{0.52\textwidth}
-\begin{block}{清单字段}
-稳定来源编号（如 \texttt{S001}）；发布者、标题、发布/更新时间、获取时间、报告期；URL / 官方记录号 / 本地路径；定位信息、来源等级、内容类别；公司、证券、资产、适应症与辖区限定。
-\end{block}
-\end{column}
-\begin{column}{0.46\textwidth}
-\begin{block}{确定性控制}
-\begin{itemize}
-  \item 按 \texttt{as\_of} 过滤截止日后发布或更新的来源
-  \item 拒绝重复来源编号
-  \item 本地文件必须位于仓库内
-  \item 计算 SHA-256，保留限制与转换说明
-  \item 支持 text/CSV/JSON/YAML/PDF 受控导入
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\vspace{0.3em}
-\footnotesize 定位：人工资料包的可审计入口，\alert{不等于} NMPA/CDE、ClinicalTrials、PubMed、医保或交易所连接器已经实现。
-\end{frame}
-
-\begin{frame}{提示词路由与三段式适配}
-\begin{columns}[T]
-\begin{column}{0.5\textwidth}
-\begin{block}{四层提示词 × 双模式}
-Memory / Collector / Analyzer / Generator 均提供公司与行业版本；\textbf{精确路由，不再回退 general}。提示词强制区分：来源事实、确定性计算、明确假设、模型判断、来源冲突与证据缺口。
-\end{block}
-\begin{block}{主流程入口}
-\texttt{run\_report.py} 配置驱动：\texttt{--config}、\texttt{--resume/--no-resume}、\texttt{--max-concurrent}；采集前预载清单；真实 \texttt{target\_type} 贯穿；重型依赖延迟加载。
-\end{block}
-\end{column}
-\begin{column}{0.48\textwidth}
-\begin{block}{各阶段行为}
-\begin{itemize}
-  \item Collector：按模式加载提示词与工具白名单；联网关闭时不加载 DeepSearch
-  \item Analyzer：无图时不需要 VLM，保留纯文本分析路径
-  \item Generator：按配置生成格式；医药报告强制附投资风险与非医疗建议声明
-\end{itemize}
-\end{block}
-\begin{block}{中文大纲}
-新增公司（11 节）与行业（10 节）大纲，含催化剂、证伪条件与证据限制章节。
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{精确引用与发布校验}
-\begin{block}{统一语法：\texttt{[Source:S001]}}
-只允许引用本次 Memory 中真实存在的来源编号；未知或格式错误使生成失败；配置要求引用时，无引用的报告不能发布。
-\end{block}
-\begin{itemize}
-  \item 参考资料由 \texttt{ToolResult} 元数据\textbf{程序化渲染}，不再用语义相似度猜测引用
-  \item 医药模式强制开启截止日校验与精确引用
-  \item 自动追加非医疗建议与投资风险声明
-  \item 通用金融模式保留上游模糊匹配路径，减少对原功能的影响
-\end{itemize}
-\begin{alertblock}{发布闸门（ADR-007）}
-未知引用、无定位、超截止时间 $\rightarrow$ 失败关闭，保留失败状态供调试，不以成功结果发布。
+\begin{alertblock}{尚未证明}
+单一年报不足以支撑完整投研结论；OCR 与词法检索存在局限；报告不是发布级研报。
 \end{alertblock}
+\begin{exampleblock}{判断}
+项目已从“流程可实现”进入“证据可定位、引用可审计”阶段；下一门槛是多来源覆盖与领域复核。
+\end{exampleblock}
 \end{frame}
 
-\begin{frame}{自动化验证与已知缺口}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\begin{block}{已执行（本机 Python 3.12.7）}
-\begin{itemize}
-  \item \texttt{compileall}、\texttt{pytest}：\textbf{42 项测试通过}
-  \item \texttt{ruff check}、\texttt{git diff --check} 通过
-  \item 覆盖：清单与配置校验、提示词键、精确引用与参考资料渲染、\texttt{Tool} 契约回归
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.5\textwidth}
-\begin{alertblock}{已知缺口（不得宣称已完成）}
+\begin{frame}{下一步}
 \begin{enumerate}
-  \item 未在干净 Python 3.11 安装锁定依赖并生成真实报告
-  \item 未固定资料包、模型版本与复现参数
-  \item 未完成临床、监管与证券人工复核
-  \item 无官方来源连接器、限速与许可记录
-  \item 无版面解析、Claim--Evidence 图与混合检索
-  \item 未验证 DOCX/PDF 转换与图表/VLM 路径
-  \item 无确定性 rNPV、患者漏斗与市场规模计算
+  \item 在 Python 3.11 干净环境复现
+  \item 接入更多一手来源：交易所、CDE/NMPA、ClinicalTrials、PubMed、医保/集采
+  \item 建立固定问题—相关页标注集，量化检索召回
+  \item 完成医药与证券领域人工复核
 \end{enumerate}
-\end{alertblock}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{向后兼容：为图检索预留的边界}
-\begin{block}{当前契约}
-\texttt{Manifest → ToolResult(source\_id + metadata + content) → Memory → Analyzer → ReportGenerator → [Source:<id>]}
-\end{block}
-\begin{block}{后续演进}
-文档解析 / Claim--Evidence 图后端替换或补充清单工具，仍然输出同一 \texttt{ToolResult} 契约。
-\end{block}
-\begin{itemize}
-  \item 图节点与检索命中必须保留：稳定来源编号、文档定位、截止日、实体限定、证据类别、快照哈希
-  \item 图数据库内部 ID \alert{不得}直接成为面向报告的引用
-  \item 替换后端不改变报告引用语法、参考资料渲染与智能体接口
-\end{itemize}
-\end{frame}
-
-\section{五、后续改进方向}
-
-\begin{frame}{分阶段实施路线}
-\scriptsize
-\begin{tabular}{clp{0.62\textwidth}}
-\toprule
-阶段 & 名称 & 目标与完成标准 \\
-\midrule
-0 & 固定案例与验收基线 & 1 公司/1 资产/1 适应症，5--10 份一手资料，冻结截止日与预期 \\
-1 & 模式与提示词 & 双模式全流程识别；干运行不回退 general/financial \\
-2 & 受控证据包 & 清单工具 + 截止日过滤 + 来源编号；复用现有财务工具 \\
-3 & 跑通主流程 & 生成无图表中文 Markdown；关键中间产物可重放 \\
-4 & 发布质量闸门 & 引用、数字、日期、管线阶段校验；人工抽查无重大错误 \\
-5 & 扩展在线数据 & 交易所披露 $\rightarrow$ CDE/NMPA $\rightarrow$ ClinicalTrials $\rightarrow$ PubMed $\rightarrow$ 医保/集采 $\rightarrow$ openFDA，再做行业模式 \\
-6 & 恢复自动化 & 自动任务、受控实时搜索、章节检索、图表、稳定导出、图检索 \\
-\bottomrule
-\end{tabular}
-\end{frame}
-
-\begin{frame}{RAG V1 目标架构：可替换的证据后端}
-\begin{columns}[T]
-\begin{column}{0.46\textwidth}
-\centering
-\begin{tikzpicture}[
-  node distance=2.6mm,
-  box/.style={draw=phblue,fill=phblue!8,rounded corners,align=center,
-              font=\scriptsize,inner sep=3pt,text width=5.1cm,minimum height=0.62cm},
-  ar/.style={-{Stealth[length=2mm]},draw=phgray}
-]
-\node[box] (a) {固定语料与清单（哈希/截止时间）};
-\node[box,below=of a] (b) {外部解析/数据层：解析 → 抽取 → 实体链接 → 主张、证据与图};
-\node[box,below=of b] (c) {EvidenceBackend：chunk / graph / hybrid};
-\node[box,below=of c] (d) {PharmaEvidenceSearchTool：超时、错误与溯源};
-\draw[ar] (a)--(b); \draw[ar] (b)--(c); \draw[ar] (c)--(d);
-\end{tikzpicture}
-\end{column}
-\begin{column}{0.46\textwidth}
-\centering
-\begin{tikzpicture}[
-  node distance=2.6mm,
-  box/.style={draw=phcyan,fill=phcyan!8,rounded corners,align=center,
-              font=\scriptsize,inner sep=3pt,text width=5.1cm,minimum height=0.62cm},
-  ar/.style={-{Stealth[length=2mm]},draw=phgray}
-]
-\node[box] (e) {Memory：EvidenceResult[]（精确证据 ID）};
-\node[box,below=of e] (f) {DataAnalyzer 纯文本：结构化带引用回答};
-\node[box,below=of f] (g) {引用校验与渲染：失败即阻断};
-\node[box,below=of g] (h) {回答 / 证据 / 检索轨迹 / 运行清单};
-\draw[ar] (e)--(f); \draw[ar] (f)--(g); \draw[ar] (g)--(h);
-\end{tikzpicture}
-\end{column}
-\end{columns}
-\vspace{0.3em}
-\footnotesize 设计原则：证据优先、后端可替换、生成器无图感知、默认失败可见、快照可复现、候选主张 $\neq$ 事实。
-\end{frame}
-
-\begin{frame}{检索策略与证据契约}
-\begin{columns}[T]
-\begin{column}{0.48\textwidth}
-\begin{block}{三种检索策略}
-\begin{itemize}
-  \item Chunk 基线：Passage 索引 + \texttt{as\_of}/实体过滤 + top-k
-  \item Graph：种子命中后 1--2 跳扩展；排除 rejected，candidate 只作线索
-  \item Hybrid：Chunk 种子 → 图扩展 → 去重 → 证据门控 → rerank
-  \item 切换策略只改配置与后端，不改生成器
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.5\textwidth}
-\begin{block}{EvidenceHit 关键字段}
-evidence\_id、document\_id、passage\_id、页码/字符区间、quote、entity\_ids、qualifiers、review\_status、retrieval\_path、snapshot\_id
-\end{block}
-\begin{block}{后端适配原则}
-Neo4j 与向量库只是可替换投影；后端必须返回检索路径；图数据库内部 ID 不得成为报告引用。
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{评测设计：指标与研究假设}
-\begin{columns}[T]
-\begin{column}{0.52\textwidth}
-\begin{block}{评测指标}
-\begin{itemize}
-  \item 召回与精确：Recall@k、Precision@k
-  \item 引用质量：引用有效率（目标 100\%）、引用支持率、引用覆盖率
-  \item 比较与冲突：跨文档覆盖率、冲突识别率、证据不足处理质量
-  \item 成本：检索延迟与端到端延迟
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.46\textwidth}
-\begin{block}{研究假设（可证伪）}
-\begin{itemize}
-  \item H1：图提升跨文档比较证据召回
-  \item H2：严格证据 ID 降低错引
-  \item H3：后端封装后可不改生成器切换策略
-  \item H4：少量人工批准 Claim 足以验证图路径价值
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{当前任务与风险}
-\begin{columns}[T]
-\begin{column}{0.52\textwidth}
-\begin{block}{当前重点}
-\begin{itemize}
-  \item \textbf{V1-005}：选定 1 公司/1 药物/1 适应症 + 5--10 份一手资料，在固定截止日下生成首份中文 Markdown 报告
-  \item \textbf{V1-006}：逐项引用审计 + 人工领域复核
-  \item 复盘衍生（Backlog）：运行预检、DSML 失败关闭、实体 lint、图表契约、运行时治理、UTF-8 日志、引用去重与分级
-\end{itemize}
-\end{block}
-\end{column}
-\begin{column}{0.46\textwidth}
-\begin{block}{主要风险}
-\begin{itemize}
-  \item 来源许可与再分发限制
-  \item 监管站点缺少稳定 API
-  \item 实体、别名与适应症粒度不一致
-  \item 截止日后信息混入结论
-  \item 模型夸大临床或投资确定性
-  \item 密钥、受限数据与运行产物不得入库
-\end{itemize}
-\end{block}
-\end{column}
-\end{columns}
-\end{frame}
-
-\begin{frame}{结论与下一步}
-\begin{block}{四个结论}
-\begin{enumerate}
-  \item 两次真实运行实证 FinSight 采集、抓取、引用、运行时、合规五环风险；编排与写作骨架可复用
-  \item 授权修复后可观测性大幅提升，剩余问题已定位并形成改进清单
-  \item Pharsight 已完成医药化纵向切片（配置、清单工具、提示词、大纲、精确引用），42 项离线测试通过
-  \item 尚未完成真实端到端与领域验收；证据图谱检索仍为后续演进
-\end{enumerate}
-\end{block}
-\begin{block}{下一步}
-V1-005 首份受控中文报告（脱敏留存）$\rightarrow$ V1-006 引用审计与领域复核 $\rightarrow$ 按 M2 接入官方连接器 $\rightarrow$ 推进 RAG V1 阶段 1--4。
-\end{block}
-\vspace{0.2em}
-\footnotesize 本次汇报不代表已具备医学审评或可发布级证券研究能力；不构成投资建议或医疗建议。
-\end{frame}
-
-\begin{frame}{相关文档（\texttt{pharsight/docs/v1/}）}
-\footnotesize
-\begin{itemize}
-  \item \texttt{README.md}：V1 文档入口与当前状态
-  \item \texttt{PHARMA\_\allowbreak RESEARCH\_\allowbreak WORKFLOW\_\allowbreak AND\_\allowbreak FINSIGHT\_\allowbreak ADAPTATION.md}：医药投研流程与全流程适配方案
-  \item \texttt{IMPLEMENTATION\_\allowbreak SUMMARY\_\allowbreak 2026-09-21.md}：已落地代码、测试与已知限制
-  \item \texttt{PHARMA\_RAG\_V1.md}：证据契约、Claim--Evidence 图与混合检索方案
-  \item \texttt{DESIGN\_\allowbreak DISCUSSION\_\allowbreak LOG.md}：7 条架构问答与设计讨论（只增不删）
-  \item \texttt{FINSIGHT\_\allowbreak RUN\_\allowbreak REVIEW\_\allowbreak 2026-09-18.md} / \texttt{FINSIGHT\_\allowbreak RERUN\_\allowbreak REVIEW\_\allowbreak 2026-09-20.md}：两次运行复盘
-  \item \texttt{PROJECT\_\allowbreak MANAGEMENT.md} / \texttt{ARCHITECTURE.md}：任务、里程碑、ADR 与证据规范
-\end{itemize}
+\vspace{0.4em}
+\footnotesize 详见 \texttt{pharsight/docs/v1/}：设计讨论记录、两次运行复盘、实现说明与完整 PDF 验收记录。
 \end{frame}
 
 \begin{frame}[standout]
