@@ -90,10 +90,16 @@ class DataCollector(BaseAgent):
                         continue
                     tool = tool_class()
                     if tool_name == 'Graph evidence search' and hasattr(tool, 'configure'):
+                        allowed_source_ids = {
+                            str(item.source_id)
+                            for item in self.memory.get_collect_data()
+                            if item.source_id
+                        }
                         tool.configure(
                             self.config,
                             self.config.llm_dict[self.use_llm_name],
                             self.use_llm_name,
+                            allowed_source_ids=allowed_source_ids,
                         )
                     tool_list.append(tool)
         self.tools = tool_list
@@ -128,8 +134,21 @@ class DataCollector(BaseAgent):
         except Exception:
             pass
 
+    def _refresh_graph_source_scope(self) -> None:
+        """Keep graph and BM25 retrieval inside the current approved Memory snapshot."""
+        approved_source_ids = {
+            str(item.source_id)
+            for item in self.memory.get_collect_data()
+            if item.source_id
+        }
+        for tool in getattr(self, "tools", []):
+            if tool.name == "Graph evidence search" and hasattr(tool, "set_allowed_source_ids"):
+                tool.set_allowed_source_ids(approved_source_ids)
+
     def _agent_tool_function(self, tool_name: str = None, **kwargs):
         """Run a tool and normalize a remotely parsed PDF into citable evidence."""
+        if tool_name == "Graph evidence search":
+            self._refresh_graph_source_scope()
         response = super()._agent_tool_function(tool_name=tool_name, **kwargs)
         if tool_name == "deepsearch agent":
             evidence_items = [
@@ -210,6 +229,7 @@ class DataCollector(BaseAgent):
         }
         if evidence.source_id not in existing_ids:
             self.memory.add_data(evidence)
+        self._refresh_graph_source_scope()
         approved_evidence = [
             item.data
             for item in self.memory.get_collect_data()
@@ -243,7 +263,7 @@ class DataCollector(BaseAgent):
         report = get_async_bridge().run_async(
             builder.build_document(index, as_of=self.config.config.get("as_of"))
         )
-        self.logger.info("GraphRAG build report: %s", report.model_dump(mode="json"))
+        self.logger.info(f"GraphRAG build report: {report.model_dump(mode='json')}")
         if report.status == "failed":
             raise RuntimeError("GraphRAG build failed: " + "; ".join(report.errors))
         return report
@@ -299,7 +319,8 @@ class DataCollector(BaseAgent):
                 existing.data["retrieval_queries"] = retrieval_queries
             existing.data["retrieval_hits"] = prior_hits
             existing.data["content"] = "\n\n".join(
-                f"[第{hit.get('page_start')}页｜{hit.get('chunk_id')}]\n{hit.get('text')}"
+                f"[第{hit.get('page_start')}页｜{hit.get('chunk_id')}]\n"
+                f"{hit.get('passage_text') or hit.get('text') or hit.get('quote') or ''}"
                 for hit in prior_hits
             )
             existing.data["locator"] = "；".join(

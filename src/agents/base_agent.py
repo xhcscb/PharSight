@@ -686,6 +686,15 @@ class BaseAgent:
         matches = list(pattern.finditer(response))
 
         if not matches:
+            incomplete_terminal = re.search(
+                r"<(final_result|report|outline|draft)>", response, re.IGNORECASE
+            )
+            if incomplete_terminal:
+                return (
+                    "invalid_response",
+                    f"The <{incomplete_terminal.group(1)}> block was truncated. "
+                    "Regenerate it with the required closing tag.",
+                )
             return "final", response
         match = matches[-1]
 

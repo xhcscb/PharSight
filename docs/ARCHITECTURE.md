@@ -157,6 +157,7 @@ V1 通过 YAML/JSON 来源清单或公开 PDF 工具把上述字段映射到 `To
 | ADR-013 | 2026-09-22 | 仅将允许集合中的精确来源别名归一化为结构化引用 | 中文标签、反引号和方括号差异可确定性修复；未知、模糊或被截断的来源编号仍阻断发布 |
 | ADR-014 | 2026-09-22 | 医药章节草稿使用显式完成标记并失败关闭，润色不完整时保留已验证草稿 | 防止模型在工具动作、半句或半表格处被误判为完成；润色是可选改进，不能破坏完整草稿 |
 | ADR-015 | 2026-10-10 | GraphRAG V1 采用无 Source 节点的三层语义图、SQLite 权威存储与 NetworkX 投影，并只对共享实体候选预计算七类关系 | 保留 Document/Passage/Evidence 溯源、Claim/Observation/Event 语义与 Entity 身份；Graph/Hybrid 通过 EvidenceBackend 工具接入且默认不替换 Chunk 基线 |
+| ADR-016 | 2026-10-10 | 受控运行将 Graph/Hybrid 检索作用域固定为当前批准 source ID；空抽取、Schema 外 QueryPlan 和不闭合终止块失败关闭 | BM25 回退不能越过 manifest/Memory 边界；查询规划保留主模型但限时 30 秒并可词法降级；失败构图保持可重试且不留下“built”假阳性 |
 
 未来决策记录须注明问题、考虑过的方案、决定、影响、负责人及取代关系。
 

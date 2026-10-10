@@ -31,6 +31,9 @@ Use one of Claim, Observation, Event. Observation attributes must retain object,
 metric, value and value_nature when present. Event attributes must retain subject, event_type,
 event_time, disclosure_time, jurisdiction, indication, prior_status and new_status when present.
 Claim attributes may retain predicate, qualifiers, forecast target and conditions.
+Allowed domain values: clinical, financial, market, regulatory, commercial, mechanism, other.
+Allowed epistemic_status values: asserted, reported, estimated, forecast, opinion, hypothesis,
+unknown. Allowed polarity values: positive, negative, uncertain, neutral.
 Allowed entity types: Company, Security, Drug, Program, Brand, Target, Modality, Indication,
 Trial, Regulator, Policy, Payer, MarketSegment, TechnologyPlatform, Transaction.
 Every record needs an exact, contiguous evidence_quote copied from the passage. Unknown values
@@ -77,6 +80,14 @@ def _normalized_name(value: str) -> str:
     return re.sub(r"[\s\-_（）()]+", "", value).casefold()
 
 
+def _page_range_from_locator(locator: Any) -> tuple[int | None, int | None]:
+    """Preserve explicit manifest page locators without inventing a page 1."""
+    pages = [int(value) for value in re.findall(r"(?:第\s*)?(\d+)\s*页", str(locator or ""))]
+    if not pages:
+        return None, None
+    return min(pages), max(pages)
+
+
 class GraphBuilder:
     """Build document graph bundles with the configured primary language model."""
 
@@ -96,16 +107,25 @@ class GraphBuilder:
         self.relation_confidence_threshold = min(1.0, max(0.0, float(relation_confidence_threshold)))
 
     async def _generate_json(self, system_prompt: str, payload: dict[str, Any]) -> Any:
-        response = await self.llm.generate(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            include_stop_string=False,
-            temperature=0,
-            max_tokens=8192,
-        )
-        return _parse_json_payload(response)
+        last_error: Exception | None = None
+        for _ in range(3):
+            try:
+                response = await self.llm.generate(
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                    include_stop_string=False,
+                    temperature=0,
+                    max_tokens=8192,
+                )
+                parsed = _parse_json_payload(response)
+                if not isinstance(parsed, (dict, list)):
+                    raise ValueError("model returned an empty or non-object JSON payload")
+                return parsed
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"model did not return valid JSON after 3 attempts: {last_error}")
 
     async def build_document(
         self,
@@ -131,6 +151,10 @@ class GraphBuilder:
         errors: list[str] = []
         try:
             bundle = await self._extract_bundle(document_index, as_of=as_of, errors=errors)
+            if not bundle.records and any("extraction failed" in error for error in errors):
+                raise RuntimeError(
+                    "No structured records were produced because passage extraction failed"
+                )
             self.store.replace_document_bundle(bundle)
             relation_count = await self.precompute_relations()
             self.store.finish_build(run_id, "built", "\n".join(errors) or None)
@@ -172,6 +196,7 @@ class GraphBuilder:
         if not content:
             raise ValueError("Evidence record requires content")
         document_hash = str(payload.get("document_hash") or hashlib.sha256(content.encode()).hexdigest())
+        page_start, page_end = _page_range_from_locator(payload.get("locator"))
         return await self.build_document(
             {
                 "document_hash": document_hash,
@@ -185,8 +210,8 @@ class GraphBuilder:
                 "chunks": [
                     {
                         "chunk_id": f"{document_hash[:12]}:p0001:c001",
-                        "page_start": 1,
-                        "page_end": 1,
+                        "page_start": page_start,
+                        "page_end": page_end,
                         "section_title": payload.get("locator"),
                         "content_hash": hashlib.sha256(content.encode()).hexdigest(),
                         "text": content,
@@ -257,23 +282,29 @@ class GraphBuilder:
                     review_status="approved",
                 )
             )
-            try:
-                raw = await self._generate_json(
-                    EXTRACTION_SYSTEM_PROMPT,
-                    {
-                        "document": {
-                            "title": document.title,
-                            "publisher": document.publisher,
-                            "published_at": document.published_at,
-                            "reporting_period": document.reporting_period,
-                            "as_of": as_of,
-                        },
-                        "passage": {"chunk_id": chunk_id, "text": text},
-                    },
-                )
-                extraction = ExtractionResponse.model_validate(raw)
-            except Exception as exc:
-                errors.append(f"{chunk_id}: extraction failed: {exc}")
+            extraction = None
+            extraction_error: Exception | None = None
+            extraction_payload = {
+                "document": {
+                    "title": document.title,
+                    "publisher": document.publisher,
+                    "published_at": document.published_at,
+                    "reporting_period": document.reporting_period,
+                    "as_of": as_of,
+                },
+                "passage": {"chunk_id": chunk_id, "text": text},
+            }
+            for _ in range(3):
+                try:
+                    raw = await self._generate_json(EXTRACTION_SYSTEM_PROMPT, extraction_payload)
+                    extraction = ExtractionResponse.model_validate(raw)
+                    break
+                except Exception as exc:
+                    extraction_error = exc
+                    if "valid JSON after 3 attempts" in str(exc):
+                        break
+            if extraction is None:
+                errors.append(f"{chunk_id}: extraction failed: {extraction_error}")
                 continue
 
             for item in extraction.records:

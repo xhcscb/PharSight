@@ -213,9 +213,11 @@ class RelationResponse(StrictModel):
 class QueryPlan(StrictModel):
     entity_names: list[str] = Field(default_factory=list)
     record_types: list[RecordType] = Field(default_factory=list)
-    domains: list[str] = Field(default_factory=list)
+    domains: list[
+        Literal["clinical", "financial", "market", "regulatory", "commercial", "mechanism", "other"]
+    ] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
-    relation_types: list[str] = Field(default_factory=list)
+    relation_types: list[RelationType] = Field(default_factory=list)
     max_hops: int = Field(default=2, ge=0, le=2)
 
 
@@ -227,6 +229,12 @@ class EvidenceHit(StrictModel):
     title: str
     publisher: str | None = None
     source_url: str | None = None
+    source_type: str | None = None
+    published_at: str | None = None
+    retrieved_at: str | None = None
+    reporting_period: str | None = None
+    reliability_tier: str | None = None
+    limitations: list[str] = Field(default_factory=list)
     page_start: int | None = None
     page_end: int | None = None
     chunk_id: str

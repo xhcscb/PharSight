@@ -629,10 +629,12 @@ class GraphStore:
                                 evidence_to_records.setdefault(evidence_id, []).append(dict(record))
             hits: list[dict[str, Any]] = []
             for evidence_id, records in evidence_to_records.items():
+                records = list({record["id"]: record for record in records}.values())
                 row = connection.execute(
                     """SELECT e.*, p.document_id, p.chunk_id, p.text AS passage_text,
                               p.page_start, p.page_end, d.source_id, d.title, d.publisher,
-                              d.source_url, d.document_hash
+                              d.source_url, d.document_hash, d.published_at, d.retrieved_at,
+                              d.reporting_period, d.metadata_json
                        FROM evidence_spans e
                        JOIN passages p ON p.id=e.passage_id
                        JOIN documents d ON d.id=p.document_id

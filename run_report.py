@@ -116,7 +116,9 @@ async def _build_preloaded_graph(config, memory, model_name: str, logger) -> lis
             as_of=config.config.get("as_of"),
         )
         reports.append(report)
-        logger.info("Preloaded GraphRAG build report: %s", report.model_dump(mode="json"))
+        logger.info(
+            f"Preloaded GraphRAG build report: {report.model_dump(mode='json')}"
+        )
         if report.status == "failed":
             raise RuntimeError("GraphRAG build failed: " + "; ".join(report.errors))
     return reports

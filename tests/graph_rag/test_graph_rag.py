@@ -1,13 +1,66 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from src.graph_rag import GraphBuilder, GraphRetriever, GraphStore
 from src.graph_rag.models import ReviewStatus
 from src.tools import get_tool_by_name
+from src.tools.document.document_index import build_document_index
 from src.tools.graph import GraphEvidenceSearchTool
+
+
+@pytest.mark.asyncio
+async def test_preloaded_graph_logging_supports_project_logger(monkeypatch, tmp_path):
+    """The project Logger accepts a single rendered message, unlike stdlib logging."""
+    from run_report import _build_preloaded_graph
+    from src.graph_rag import BuildReport
+
+    report = BuildReport(
+        document_id="doc:test",
+        document_hash="hash",
+        status="built",
+        model_name="deepseek-flash",
+    )
+
+    class BuilderStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def build_evidence_record(self, payload, *, as_of=None):
+            return report
+
+    class LoggerStub:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(message)
+
+    monkeypatch.setattr("src.graph_rag.GraphBuilder", BuilderStub)
+    config = SimpleNamespace(
+        config={
+            "retrieval_backend": "graph",
+            "graph_build_on_ingest": True,
+            "graph_store_path": str(tmp_path / "graph.sqlite3"),
+            "as_of": "2026-10-10T23:59:59+08:00",
+        },
+        llm_dict={"deepseek-flash": object()},
+    )
+    memory = SimpleNamespace(
+        get_collect_data=lambda: [
+            SimpleNamespace(source_id="S001", data={"content": "evidence"})
+        ]
+    )
+    logger = LoggerStub()
+
+    result = await _build_preloaded_graph(config, memory, "deepseek-flash", logger)
+
+    assert result == [report]
+    assert logger.messages and "doc:test" in logger.messages[0]
 
 
 class MockLLM:
@@ -199,6 +252,66 @@ async def test_missing_evidence_quote_is_rejected_without_polluting_records(tmp_
 
 
 @pytest.mark.asyncio
+async def test_all_extraction_failures_fail_build_and_remain_retryable(tmp_path):
+    index = document_index()
+    index["chunks"] = index["chunks"][:1]
+    store = GraphStore(tmp_path / "graph.sqlite3")
+    report = await GraphBuilder(
+        store,
+        MockLLM("", "", ""),
+        "deepseek-flash",
+    ).build_document(index)
+
+    assert report.status == "failed"
+    assert "No structured records" in report.errors[-1]
+    assert store.snapshot()["documents"] == 0
+    assert not store.is_current(index["document_hash"], "deepseek-flash")
+
+
+@pytest.mark.asyncio
+async def test_hybrid_bm25_is_limited_to_approved_source_scope(tmp_path):
+    index_dir = tmp_path / "indexes"
+    for source_id, content in (
+        ("APPROVED-001", "恒瑞医药营业收入316.3亿元"),
+        ("OUTSIDE-001", "恒瑞医药营业收入9999亿元"),
+    ):
+        build_document_index(
+            pages=[content],
+            source_url=f"https://example.invalid/{source_id}.pdf",
+            title=source_id,
+            parser="test",
+            retrieved_at="2026-10-10T10:00:00+08:00",
+            source_id=source_id,
+            index_dir=index_dir,
+        )
+    retriever = GraphRetriever(GraphStore(tmp_path / "graph.sqlite3"))
+
+    pack = await retriever.search(
+        "恒瑞医药营业收入",
+        backend="hybrid",
+        allowed_source_ids={"APPROVED-001"},
+        index_dir=index_dir,
+    )
+
+    assert {hit.source_id for hit in pack.hits} == {"APPROVED-001"}
+    empty_pack = await retriever.search(
+        "恒瑞医药营业收入",
+        backend="hybrid",
+        allowed_source_ids=set(),
+        index_dir=index_dir,
+    )
+    assert empty_pack.hits == []
+    with pytest.raises(ValueError, match="outside the approved evidence scope"):
+        await retriever.search(
+            "恒瑞医药营业收入",
+            backend="hybrid",
+            source_id="OUTSIDE-001",
+            allowed_source_ids={"APPROVED-001"},
+            index_dir=index_dir,
+        )
+
+
+@pytest.mark.asyncio
 async def test_graph_retrieval_returns_original_passage_and_candidate_warning(tmp_path):
     quote = "48周体重下降22.5%，结果为直接报告值"
     llm = MockLLM(
@@ -237,6 +350,9 @@ async def test_graph_retrieval_returns_original_passage_and_candidate_warning(tm
     assert quote in pack.hits[0].passage_text
     assert pack.hits[0].source_id == "WEB-TEST-001"
     assert pack.hits[0].record_summaries[0]["review_status"] == "candidate"
+    assert len(pack.hits[0].record_summaries) == len(
+        {item["id"] for item in pack.hits[0].record_summaries}
+    )
     assert pack.hits[0].graph_paths
 
 
@@ -266,6 +382,22 @@ async def test_query_planning_failure_uses_lexical_fallback(tmp_path):
     retriever = GraphRetriever(store, MockLLM(RuntimeError("planner unavailable")), "deepseek-flash")
     plan, warnings = await retriever.plan_query("测试药物监管进展")
     assert plan.keywords
+    assert "lexical plan used" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_query_planning_timeout_uses_lexical_fallback(tmp_path):
+    class SlowLLM:
+        async def generate(self, messages, **kwargs):
+            await asyncio.sleep(1)
+            return {}
+
+    retriever = GraphRetriever(GraphStore(tmp_path / "graph.sqlite3"), SlowLLM())
+    retriever.planner_timeout_seconds = 0.01
+
+    plan, warnings = await retriever.plan_query("恒瑞医药营业收入")
+
+    assert "恒瑞医药" in plan.keywords
     assert "lexical plan used" in warnings[0]
 
 
@@ -344,3 +476,59 @@ async def test_graph_tool_returns_toolresult_compatible_evidence(tmp_path):
     assert results[0].source_id == "WEB-TEST-001"
     assert quote in results[0].data["content"]
     assert results[0].data["retrieval_hits"][0]["graph_paths"]
+
+
+def test_collector_merge_uses_graph_passage_text_instead_of_none():
+    from src.agents.data_collector.data_collector import DataCollector
+
+    existing = SimpleNamespace(
+        source_id="S001",
+        data={"source_id": "S001", "content": "original manifest content"},
+    )
+    collector = object.__new__(DataCollector)
+    collector.memory = SimpleNamespace(
+        get_collect_data=lambda: [existing],
+        add_data=lambda item: None,
+    )
+    collector.code_executor = SimpleNamespace(set_variable=lambda *args: None)
+
+    collector._merge_pdf_retrieval_response(
+        [
+            {
+                "source_id": "S001",
+                "content": "tool rendering",
+                "query": "收入",
+                "retrieval_hits": [
+                    {
+                        "chunk_id": "chunk-1",
+                        "page_start": 3,
+                        "passage_text": "营业收入316.3亿元",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert "营业收入316.3亿元" in existing.data["content"]
+    assert "None" not in existing.data["content"]
+
+
+def test_collector_refreshes_graph_scope_from_current_memory():
+    from src.agents.data_collector.data_collector import DataCollector
+
+    class GraphToolStub:
+        name = "Graph evidence search"
+
+        def set_allowed_source_ids(self, source_ids):
+            self.source_ids = source_ids
+
+    collector = object.__new__(DataCollector)
+    collector.memory = SimpleNamespace(
+        get_collect_data=lambda: [SimpleNamespace(source_id="NEW-PDF-001")]
+    )
+    graph_tool = GraphToolStub()
+    collector.tools = [graph_tool]
+
+    collector._refresh_graph_source_scope()
+
+    assert graph_tool.source_ids == {"NEW-PDF-001"}

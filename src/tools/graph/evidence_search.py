@@ -32,16 +32,38 @@ class GraphEvidenceSearchTool(Tool):
         self._backend = "hybrid"
         self._max_hops = 2
         self._top_k = 8
+        self._allowed_source_ids: set[str] | None = None
 
-    def configure(self, config: Any, llm: Any, model_name: str) -> None:
+    def configure(
+        self,
+        config: Any,
+        llm: Any,
+        model_name: str,
+        *,
+        allowed_source_ids: set[str] | None = None,
+    ) -> None:
         values = config.config if hasattr(config, "config") else dict(config)
         path = Path(values.get("graph_store_path") or "outputs/.graph_cache/pharsight_graph.sqlite3")
         if not path.is_absolute() and hasattr(config, "project_root"):
             path = Path(config.project_root) / path
-        self._retriever = GraphRetriever(GraphStore(path), llm=llm, model_name=model_name)
+        self._retriever = GraphRetriever(
+            GraphStore(path),
+            llm=llm,
+            model_name=model_name,
+            planner_timeout_seconds=values.get("graph_query_planning_timeout", 30),
+        )
         self._backend = str(values.get("retrieval_backend", "hybrid"))
         self._max_hops = int(values.get("graph_max_hops", 2))
         self._top_k = int(values.get("graph_top_k", 8))
+        self.set_allowed_source_ids(allowed_source_ids)
+
+    def set_allowed_source_ids(self, source_ids: set[str] | None) -> None:
+        """Update the approved evidence scope; an empty set deliberately denies all sources."""
+        self._allowed_source_ids = (
+            None
+            if source_ids is None
+            else {str(item).upper() for item in source_ids if str(item).strip()}
+        )
 
     async def api_function(
         self,
@@ -59,6 +81,7 @@ class GraphEvidenceSearchTool(Tool):
             max_hops=self._max_hops,
             source_id=(source_id or "").strip() or None,
             document_hash=(document_hash or "").strip() or None,
+            allowed_source_ids=self._allowed_source_ids,
         )
         if not pack.hits:
             return [
@@ -92,16 +115,18 @@ class GraphEvidenceSearchTool(Tool):
                 "source_type": "graph_evidence",
                 "publisher": first.publisher,
                 "title": first.title,
-                "published_at": None,
-                "retrieved_at": None,
+                "published_at": first.published_at,
+                "retrieved_at": first.retrieved_at,
+                "reporting_period": first.reporting_period,
                 "url": first.source_url,
                 "final_url": first.source_url,
                 "locator": "；".join(f"第{hit.page_start}页/{hit.chunk_id}" for hit in hits),
-                "reliability_tier": "unrated",
+                "reliability_tier": first.reliability_tier or "unrated",
                 "evidence_label": "sourced_fact",
                 "cutoff_eligible": True,
                 "limitations": [
                     "图中自动抽取记录默认为 candidate，仅用于检索导航；结论必须以返回原文核验。",
+                    *first.limitations,
                     *pack.warnings,
                 ],
                 "query": query,

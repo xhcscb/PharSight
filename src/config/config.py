@@ -174,6 +174,7 @@ class Config:
         for key, minimum, maximum, default in (
             ("graph_max_hops", 0, 2, 2),
             ("graph_top_k", 1, 30, 8),
+            ("graph_query_planning_timeout", 1, 300, 30),
             ("graph_relation_candidate_limit", 1, 10000, 100),
         ):
             value = self.config.get(key, default)

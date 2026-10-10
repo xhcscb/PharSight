@@ -6,6 +6,13 @@ def _parse(response: str) -> tuple[str, str]:
     return agent._parse_llm_response(response)
 
 
+def test_unclosed_report_is_retried_instead_of_accepted_as_final():
+    action, content = _parse("<report>partial analysis")
+
+    assert action == "invalid_response"
+    assert "truncated" in content
+
+
 def test_execute_tag_strips_nested_markdown_fence():
     action, content = _parse("<execute>```python\nprint('ok')\n```</execute>")
 
