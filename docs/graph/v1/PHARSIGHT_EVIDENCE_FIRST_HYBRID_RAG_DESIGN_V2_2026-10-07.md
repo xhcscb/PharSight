@@ -6,6 +6,13 @@
 > 适用范围：A/H 股医药公司研究与医药行业研究  
 > 关联材料：[方法调研](./GRAPH_RAG_RESEARCH_AND_PHARSIGHT_DESIGN_2026-10-07.md)、[meeting_02](./meeting_02.md)、[RAG V1](../../v1/PHARMA_RAG_V1.md)
 
+> 实施决定（2026-10-10）：GraphRAG V1 按项目负责人要求删除独立 `Source` 节点，
+> 将 Document/Passage/Evidence 视为第一层、Claim/Observation/Event 为第二层、
+> Entity 为第三层；七类证据关系作为边实现而非第四层节点。首版使用
+> SQLite + NetworkX，并对共享实体阻塞后的候选关系做全局预计算。详见
+> [实现说明](./GRAPH_RAG_V1_IMPLEMENTATION_2026-10-10.md)。下文保留原始 V2.1
+> 设计作为决策背景，其 Source/第四层表述不代表当前运行时 Schema。
+
 ## 1. 设计结论先行
 
 Pharsight 不应把医药研报压缩成传统的“实体—关系—实体”知识图，也不应把所有文本块简单连成一张大图。推荐的核心结构是一个**以来源陈述为中心、以原文证据为底座、以实体作为跨文档连接点、以比较与冲突关系作为分析层的证据图**。

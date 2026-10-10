@@ -14,6 +14,11 @@ Pharsight 面向两种中文研究模式：
 
 近期优先以最小改动跑通 FinSight 的 `DataCollector → DataAnalyzer → ReportGenerator` 主流程：DataCollector 默认用 Serper 发现公开网页并打开正文，成功抓取且满足截止时间的页面转成稳定 `WEB-*` 证据；PDF 整本解析一次后建立页级持久索引，各采集任务只取相关文本块，也可叠加受控清单中的一手文件。随后完成医药分析和带精确来源编号的中文 Markdown 报告。Claim–Evidence 构图及 Graph/Hybrid 检索将沿用现有文档、页、块和来源编号契约继续演进。
 
+GraphRAG V1 已提供可选的 `graph`/`hybrid` 检索后端：采用无 Source 节点的三层
+`Document/Passage/Evidence → Claim/Observation/Event → Entity` 结构，SQLite 保存
+权威记录、NetworkX 提供可重建投影。默认仍为 `chunk`；配置和验收边界见
+[`GraphRAG V1 实现说明`](./docs/graph/v1/GRAPH_RAG_V1_IMPLEMENTATION_2026-10-10.md)。
+
 每条重要结论必须区分来源事实、确定性计算、明确假设和模型判断，保留来源及日期、单位、口径和截止时间。Pharsight 仅辅助投资研究，不提供投资建议或医疗建议。
 
 ## 与 FinSight 的关系

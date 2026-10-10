@@ -71,6 +71,10 @@ class DataCollector(BaseAgent):
                 category for category in get_tool_categories() if category != 'web'
             }
 
+        retrieval_backend = str(self.config.config.get('retrieval_backend', 'chunk')).lower()
+        if retrieval_backend in {'graph', 'hybrid'}:
+            allowed_categories.add('graph')
+
         allowed_tool_names = set(self.config.config.get('allowed_tools', []))
         for tool_type, tool_name_list in get_tool_categories().items():
             if tool_type not in allowed_categories:
@@ -80,7 +84,18 @@ class DataCollector(BaseAgent):
                     continue
                 tool_class = get_tool_by_name(tool_name)
                 if tool_class is not None:
-                    tool_list.append(tool_class())
+                    if retrieval_backend in {'graph', 'hybrid'} and tool_name == 'PDF evidence search':
+                        continue
+                    if retrieval_backend == 'chunk' and tool_name == 'Graph evidence search':
+                        continue
+                    tool = tool_class()
+                    if tool_name == 'Graph evidence search' and hasattr(tool, 'configure'):
+                        tool.configure(
+                            self.config,
+                            self.config.llm_dict[self.use_llm_name],
+                            self.use_llm_name,
+                        )
+                    tool_list.append(tool)
         self.tools = tool_list
         try:
             self.logger.info(f"Initialized default tools: total {len(tool_list)} items")
@@ -139,7 +154,7 @@ class DataCollector(BaseAgent):
                     f"\n证据摘录:\n{content_preview}"
                 )
             return f"{response}{''.join(evidence_lines)}"
-        if tool_name == "PDF evidence search":
+        if tool_name in {"PDF evidence search", "Graph evidence search"}:
             return self._merge_pdf_retrieval_response(response)
         if tool_name != "PaddleOCR PDF reader" or not kwargs.get("file_url"):
             return response
@@ -201,7 +216,37 @@ class DataCollector(BaseAgent):
             if item.source_id
         ]
         self.code_executor.set_variable("approved_evidence", approved_evidence)
+        if (
+            index_metadata
+            and self.config.config.get("graph_build_on_ingest", True)
+            and str(self.config.config.get("retrieval_backend", "chunk")) in {"graph", "hybrid"}
+        ):
+            self._build_graph_for_index(index_metadata["document_hash"])
         return [evidence.data]
+
+    def _build_graph_for_index(self, document_hash: str):
+        """Build an indexed PDF graph synchronously through the shared async bridge."""
+        from src.graph_rag import GraphBuilder, GraphStore
+        from src.tools.document import load_document_index
+        from src.utils.async_bridge import get_async_bridge
+
+        index = load_document_index(document_hash)
+        builder = GraphBuilder(
+            GraphStore(self.config.config["graph_store_path"]),
+            self.config.llm_dict[self.use_llm_name],
+            self.use_llm_name,
+            relation_candidate_limit=self.config.config.get("graph_relation_candidate_limit", 100),
+            relation_confidence_threshold=self.config.config.get(
+                "graph_relation_confidence_threshold", 0.7
+            ),
+        )
+        report = get_async_bridge().run_async(
+            builder.build_document(index, as_of=self.config.config.get("as_of"))
+        )
+        self.logger.info("GraphRAG build report: %s", report.model_dump(mode="json"))
+        if report.status == "failed":
+            raise RuntimeError("GraphRAG build failed: " + "; ".join(report.errors))
+        return report
 
     def _merge_pdf_retrieval_response(self, response):
         """Upsert retrieved PDF chunks into the document-level evidence record."""

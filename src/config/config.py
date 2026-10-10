@@ -165,6 +165,35 @@ class Config:
             if parsed < 1:
                 raise ValueError(f"'{key}' must be a positive integer")
 
+        retrieval_backend = str(self.config.get("retrieval_backend", "chunk")).strip().lower()
+        if retrieval_backend not in {"chunk", "graph", "hybrid"}:
+            raise ValueError("'retrieval_backend' must be one of: chunk, graph, hybrid")
+        self.config["retrieval_backend"] = retrieval_backend
+        if not isinstance(self.config.get("graph_build_on_ingest", True), bool):
+            raise ValueError("'graph_build_on_ingest' must be a boolean")
+        for key, minimum, maximum, default in (
+            ("graph_max_hops", 0, 2, 2),
+            ("graph_top_k", 1, 30, 8),
+            ("graph_relation_candidate_limit", 1, 10000, 100),
+        ):
+            value = self.config.get(key, default)
+            if isinstance(value, bool):
+                raise ValueError(f"'{key}' must be an integer")
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"'{key}' must be an integer") from exc
+            if parsed < minimum or parsed > maximum:
+                raise ValueError(f"'{key}' must be between {minimum} and {maximum}")
+            self.config[key] = parsed
+        try:
+            threshold = float(self.config.get("graph_relation_confidence_threshold", 0.7))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("'graph_relation_confidence_threshold' must be numeric") from exc
+        if threshold < 0 or threshold > 1:
+            raise ValueError("'graph_relation_confidence_threshold' must be between 0 and 1")
+        self.config["graph_relation_confidence_threshold"] = threshold
+
     def _validate_live_search_config(self):
         """Validate the explicitly enabled live-search provider."""
         if not self.config.get("live_web_search", False):
@@ -187,6 +216,7 @@ class Config:
             "reference_doc_path",
             "outline_template_path",
             "source_manifest",
+            "graph_store_path",
         ):
             raw_value = self.config.get(key)
             if not raw_value:

@@ -54,6 +54,20 @@ def test_pharma_config_rejects_invalid_selection_threshold():
         config._validate_research_config()
 
 
+def test_pharma_config_validates_graph_retrieval_controls():
+    config = _config_for_validation(retrieval_backend="hybrid", graph_max_hops=2)
+    config._validate_research_config()
+    assert config.config["retrieval_backend"] == "hybrid"
+
+    invalid_backend = _config_for_validation(retrieval_backend="neo4j")
+    with pytest.raises(ValueError, match="retrieval_backend"):
+        invalid_backend._validate_research_config()
+
+    invalid_hops = _config_for_validation(graph_max_hops=3)
+    with pytest.raises(ValueError, match="graph_max_hops"):
+        invalid_hops._validate_research_config()
+
+
 def _query_config(**overrides):
     values = {
         "target_name": "示例医药公司",

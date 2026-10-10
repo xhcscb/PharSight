@@ -212,6 +212,18 @@ def _load_indexes(
     return indexes
 
 
+def load_document_index(
+    document_hash: str,
+    *,
+    index_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Load one complete document index by exact hash."""
+    indexes = _load_indexes(document_hash=document_hash, index_dir=index_dir)
+    if not indexes:
+        raise FileNotFoundError(f"No document index found for hash: {document_hash}")
+    return indexes[0]
+
+
 def search_document_indexes(
     query: str,
     *,
@@ -396,4 +408,3 @@ class PDFEvidenceSearchTool(Tool):
                 )
             )
         return results
-

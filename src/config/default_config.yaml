@@ -32,6 +32,16 @@ evidence_selection: 'auto'
 evidence_selection_threshold: 10
 evidence_selection_max_k: 12
 
+# Evidence retrieval. Graph/hybrid reuse the primary DS_MODEL_NAME for
+# extraction, entity/relationship construction and query planning.
+retrieval_backend: 'chunk'  # chunk, graph, hybrid
+graph_build_on_ingest: true
+graph_store_path: './outputs/.graph_cache/pharsight_graph.sqlite3'
+graph_max_hops: 2
+graph_top_k: 8
+graph_relation_candidate_limit: 100
+graph_relation_confidence_threshold: 0.7
+
 # Conversation-history guards (characters) for long agent runs.
 # A single action result longer than max_action_result_chars is truncated
 # before entering the chat history. Once the history exceeds

@@ -90,6 +90,38 @@ def _preload_evidence(config, memory):
     return added
 
 
+async def _build_preloaded_graph(config, memory, model_name: str, logger) -> list:
+    """Incrementally graph eligible manifest/web evidence before agents start."""
+    if str(config.config.get("retrieval_backend", "chunk")) not in {"graph", "hybrid"}:
+        return []
+    if not config.config.get("graph_build_on_ingest", True):
+        return []
+    from src.graph_rag import GraphBuilder, GraphStore
+
+    builder = GraphBuilder(
+        GraphStore(config.config["graph_store_path"]),
+        config.llm_dict[model_name],
+        model_name,
+        relation_candidate_limit=config.config.get("graph_relation_candidate_limit", 100),
+        relation_confidence_threshold=config.config.get(
+            "graph_relation_confidence_threshold", 0.7
+        ),
+    )
+    reports = []
+    for item in memory.get_collect_data():
+        if not item.source_id or not isinstance(item.data, dict):
+            continue
+        report = await builder.build_evidence_record(
+            item.data,
+            as_of=config.config.get("as_of"),
+        )
+        reports.append(report)
+        logger.info("Preloaded GraphRAG build report: %s", report.model_dump(mode="json"))
+        if report.status == "failed":
+            raise RuntimeError("GraphRAG build failed: " + "; ".join(report.errors))
+    return reports
+
+
 async def _run_priority_group(async_tasks: list, fail_fast: bool) -> dict:
     """Run one priority tier and return a task -> result/exception mapping.
 
@@ -183,6 +215,7 @@ async def run_report(
     if preloaded_evidence:
         logger.info(f"Preloaded {len(preloaded_evidence)} approved evidence sources")
         memory.save()
+    await _build_preloaded_graph(config, memory, use_llm_name, logger)
 
     # Generate additional collect and analysis tasks using LLM if not already generated
     research_query = _build_research_query(config)
