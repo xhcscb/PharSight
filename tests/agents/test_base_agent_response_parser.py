@@ -120,6 +120,29 @@ print(get_data(0))
     assert _parse(response) == ("report", "最终章节")
 
 
+def test_multiple_execute_blocks_are_combined_in_order():
+    response = """<execute>Python代码</execute>
+```python
+print(get_data(1))
+```
+<execute>print(get_analysis_result(0))</execute>
+<execute>Python code</execute>
+```python
+print(get_data(2))
+```"""
+
+    action, content = _parse(response)
+
+    assert action == "code"
+    assert content.splitlines() == [
+        "print(get_data(1))",
+        "",
+        "print(get_analysis_result(0))",
+        "",
+        "print(get_data(2))",
+    ]
+
+
 def test_empty_model_response_requests_retry():
     action, content = _parse("   ")
 

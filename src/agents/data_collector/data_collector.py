@@ -259,6 +259,11 @@ class DataCollector(BaseAgent):
             relation_confidence_threshold=self.config.config.get(
                 "graph_relation_confidence_threshold", 0.7
             ),
+            build_concurrency=self.config.config.get("graph_build_concurrency", 4),
+            max_extraction_failure_ratio=self.config.config.get(
+                "graph_max_extraction_failure_ratio", 0.1
+            ),
+            json_max_tokens=self.config.config.get("graph_json_max_tokens", 16384),
         )
         report = get_async_bridge().run_async(
             builder.build_document(index, as_of=self.config.config.get("as_of"))

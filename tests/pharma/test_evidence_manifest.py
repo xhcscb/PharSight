@@ -50,6 +50,62 @@ def test_manifest_tool_is_registered_in_pharma_category():
     assert "pharma_evidence_manifest" in get_tool_categories()["pharma"]
 
 
+def test_local_pdf_is_fully_indexed_without_copying_full_text_into_memory(
+    tmp_path, monkeypatch
+):
+    import pdfplumber
+
+    from src.tools.document import document_index
+    from src.tools.pharma import evidence_manifest
+
+    pdf_path = tmp_path / "source.pdf"
+    pdf_path.write_bytes(b"deterministic-test-pdf")
+
+    class FakePage:
+        def __init__(self, text):
+            self.text = text
+
+        def extract_text(self):
+            return self.text
+
+    class FakePDF:
+        pages = [FakePage("page one revenue 100"), FakePage("page two pipeline trial")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(pdfplumber, "open", lambda path: FakePDF())
+    manifest_path = tmp_path / "manifest.yaml"
+    manifest_path.write_text(
+        """as_of: '2026-10-10T00:00:00+08:00'
+sources:
+  - source_id: PDF-001
+    source_type: issuer_filing
+    publisher: Test Issuer
+    title: Complete PDF
+    published_at: '2026-01-01T00:00:00+08:00'
+    local_path: source.pdf
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evidence_manifest, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(document_index, "DOCUMENT_INDEX_DIR", tmp_path / "indexes")
+
+    record = load_evidence_manifest(manifest_path)[0].data
+    index = document_index.load_document_index(
+        record["document_hash"], index_dir=tmp_path / "indexes"
+    )
+
+    assert index["page_count"] == 2
+    assert {chunk["page_start"] for chunk in index["chunks"]} == {1, 2}
+    assert "完整 PDF" in record["content"]
+    assert "page one revenue" not in record["content"]
+    assert "chunks" not in record["document_index"]
+
+
 def test_resume_rejects_changed_evidence_snapshot():
     existing = load_evidence_manifest(FIXTURE, strict_cutoff=True)[0]
     existing.data["document_hash"] = "changed"

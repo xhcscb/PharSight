@@ -24,6 +24,7 @@ answer the question and do not invent identifiers."""
 
 
 def _tokens(value: str) -> set[str]:
+    value = value.translate(str.maketrans({"Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV"}))
     latin = re.findall(r"[a-z0-9][a-z0-9._-]*", value.lower())
     chinese: list[str] = []
     for sequence in re.findall(r"[\u4e00-\u9fff]+", value):
@@ -35,6 +36,22 @@ def _tokens(value: str) -> set[str]:
                 for index in range(len(sequence) - width + 1)
             )
     return set(latin + chinese)
+
+
+def _reporting_periods(value: str) -> set[str]:
+    """Normalize explicit quarter/half/year markers used to rank period-specific evidence."""
+    compact = re.sub(r"[\s年期第季度半年度报告]", "", value.upper())
+    periods = set(re.findall(r"20\d{2}(?:Q[1-4]|H[12]|FY)", compact))
+    periods.update(f"{year}H1" for year in re.findall(r"(20\d{2})\s*年?\s*上半年", value))
+    periods.update(f"{year}H2" for year in re.findall(r"(20\d{2})\s*年?\s*下半年", value))
+    quarter_numbers = {"一": "1", "二": "2", "三": "3", "四": "4"}
+    periods.update(
+        f"{year}Q{quarter_numbers.get(quarter, quarter)}"
+        for year, quarter in re.findall(
+            r"(20\d{2})\s*年?\s*第?\s*([一二三四1-4])\s*季度", value
+        )
+    )
+    return periods
 
 
 class GraphRetriever:
@@ -52,6 +69,7 @@ class GraphRetriever:
         self.llm = llm
         self.model_name = model_name
         self.planner_timeout_seconds = max(1.0, float(planner_timeout_seconds))
+        self._graph_projection = None
 
     async def plan_query(self, query: str, max_hops: int = 2) -> tuple[QueryPlan, list[str]]:
         """Produce a bounded query plan, falling back to deterministic lexical terms."""
@@ -66,9 +84,9 @@ class GraphRetriever:
                         ],
                         include_stop_string=False,
                         temperature=0,
-                        # Reasoning-capable DeepSeek aliases may consume a sizeable part of
-                        # this budget before emitting the small final JSON object.
                         max_tokens=4096,
+                        response_format={"type": "json_object"},
+                        extra_body={"thinking": {"type": "disabled"}},
                     ),
                     timeout=self.planner_timeout_seconds,
                 )
@@ -187,10 +205,18 @@ class GraphRetriever:
         terms = [*plan.entity_names, *plan.keywords]
         if not terms:
             terms = sorted(_tokens(query))
-        seed_ids = self.store.search_seed_ids(terms, limit=max(20, top_k))
+        # Full filings contain many repeated issuer and metric mentions. Twenty
+        # lexical seeds was too narrow: summary pages could be crowded out by
+        # detailed tables before period-aware evidence scoring ran.
+        seed_ids = self.store.search_seed_ids(terms, limit=max(60, top_k * 4))
         if not seed_ids:
             return []
-        graph = self.store.to_networkx()
+        if self._graph_projection is None:
+            # A configured retriever is created after ingest/build and reused for the
+            # whole collection run. Rebuilding ~20k graph objects for every query was
+            # the dominant retrieval cost on full PDFs.
+            self._graph_projection = self.store.to_networkx()
+        graph = self._graph_projection
         allowed: dict[str, tuple[int, list[str]]] = {}
         queue: deque[tuple[str, int, list[str]]] = deque()
         for seed in seed_ids:
@@ -205,6 +231,15 @@ class GraphRetriever:
             for neighbour in neighbours:
                 if plan.relation_types:
                     structural = {"CONTAINS", "YIELDS", "SUPPORTS_RECORD"}
+                    semantic_relations = {
+                        "EQUIVALENT_TO",
+                        "SUPPORTS",
+                        "SUPPLEMENTS",
+                        "INCOMPARABLE_WITH",
+                        "CONTRADICTS",
+                        "SUPERSEDES",
+                        "SAME_ORIGIN_AS",
+                    }
                     allowed_relations = structural | set(plan.relation_types)
                     edge_relations = {
                         data.get("relation")
@@ -213,7 +248,11 @@ class GraphRetriever:
                         data.get("relation")
                         for data in graph.get_edge_data(neighbour, node, default={}).values()
                     }
-                    if edge_relations and not edge_relations & allowed_relations:
+                    # Entity-role edges are necessary to reach records from an entity
+                    # seed. Only filter out unrequested members of the seven global
+                    # semantic relation types; keep structural and role edges traversable.
+                    role_relations = edge_relations - semantic_relations
+                    if edge_relations and not edge_relations & (allowed_relations | role_relations):
                         continue
                 if neighbour in allowed and allowed[neighbour][0] <= distance + 1:
                     continue
@@ -222,6 +261,8 @@ class GraphRetriever:
                 queue.append((neighbour, distance + 1, next_path))
         raw_hits = self.store.evidence_hits_for_nodes(set(allowed))
         query_tokens = _tokens(query)
+        requested_periods = _reporting_periods(query)
+        count_intent = any(marker in query for marker in ("数量", "多少", "几项", "多少项"))
         hits: list[EvidenceHit] = []
         for raw in raw_hits:
             if source_id and str(raw.get("source_id") or "").upper() != source_id.upper():
@@ -241,6 +282,19 @@ class GraphRetriever:
             lexical = len(query_tokens & _tokens(raw["quote"] + " " + raw["passage_text"]))
             approved = sum(record["review_status"] == "approved" for record in records)
             score = 2.0 + lexical + approved * 0.5 - distance * 0.25
+            if count_intent:
+                evidence_text = raw["quote"] + " " + raw["passage_text"]
+                score += 4.0 if "共有" in evidence_text else 0.0
+                score += min(3, len(set(re.findall(r"\d+\s*项", evidence_text))))
+            hit_periods = _reporting_periods(str(raw.get("reporting_period") or ""))
+            if requested_periods:
+                # An explicit reporting period is a hard semantic constraint for
+                # issuer filings, not just another keyword. A Q1 passage can share
+                # nearly every financial/clinical term with an H1 question and used
+                # to outrank the requested filing on lexical density alone.
+                score += 6.0 if requested_periods & hit_periods else -12.0
+            if raw.get("source_id") and str(raw["source_id"]).casefold() in query.casefold():
+                score += 5.0
             summaries = [
                 {
                     "id": record["id"],
@@ -265,6 +319,28 @@ class GraphRetriever:
                         reason = attributes.get("reason")
                         if reason and reason not in relation_reasons:
                             relation_reasons.append(reason)
+            # A matching record is often selected as a distance-zero seed. In that
+            # case the shortest seed path contains no edge even though the record has
+            # an explicitly requested semantic relation. Surface those incident edges
+            # so comparison/contradiction queries retain their relationship rationale.
+            if plan.relation_types:
+                requested_relations = set(plan.relation_types)
+                for record_id in record_ids:
+                    for neighbour in set(graph.successors(record_id)) | set(
+                        graph.predecessors(record_id)
+                    ):
+                        for left, right in ((record_id, neighbour), (neighbour, record_id)):
+                            for edge_data in graph.get_edge_data(left, right, default={}).values():
+                                if edge_data.get("relation") not in requested_relations:
+                                    continue
+                                relation_path = [left, right]
+                                if relation_path not in paths:
+                                    paths.append(relation_path)
+                                attributes = json.loads(edge_data.get("attributes_json") or "{}")
+                                reason = attributes.get("reason")
+                                if reason and reason not in relation_reasons:
+                                    relation_reasons.append(reason)
+            score += min(3, len(relation_reasons)) * 1.5
             hits.append(
                 EvidenceHit(
                     evidence_id=raw["id"],
@@ -293,7 +369,37 @@ class GraphRetriever:
                     retrieval_channels=["graph"],
                 )
             )
-        return sorted(hits, key=lambda item: (-item.score, item.evidence_id))[:top_k]
+        # Multiple exact quotes from the same passage must not consume the whole
+        # pre-merge top-k window; merge them before truncation so other pages and
+        # relation-bearing passages remain reachable.
+        merged_hits: dict[tuple[str | None, str], EvidenceHit] = {}
+        for hit in sorted(hits, key=lambda item: (-item.score, item.evidence_id)):
+            key = (hit.source_id, hit.chunk_id)
+            current = merged_hits.get(key)
+            if current is None:
+                merged_hits[key] = hit
+                continue
+            current.score = max(current.score, hit.score)
+            current.record_ids = sorted(set(current.record_ids + hit.record_ids))
+            summaries = {
+                item["id"]: item
+                for item in [*current.record_summaries, *hit.record_summaries]
+            }
+            current.record_summaries = list(summaries.values())
+            current.graph_paths.extend(
+                path for path in hit.graph_paths if path not in current.graph_paths
+            )
+            current.relation_reasons.extend(
+                reason
+                for reason in hit.relation_reasons
+                if reason not in current.relation_reasons
+            )
+        for hit in merged_hits.values():
+            hit.graph_paths = hit.graph_paths[:20]
+            hit.relation_reasons = hit.relation_reasons[:12]
+        return sorted(
+            merged_hits.values(), key=lambda item: (-item.score, item.evidence_id)
+        )[:top_k]
 
     def _chunk_search(
         self,

@@ -34,6 +34,8 @@ class _FakeAgent:
     """Minimal wrapper to call BaseAgent's static-ish methods without init."""
 
     _parse_llm_response = BaseAgent._parse_llm_response
+    _parse_dsml_tool_calls = BaseAgent._parse_dsml_tool_calls
+    _strip_markdown_code_fence = staticmethod(BaseAgent._strip_markdown_code_fence)
     _format_execution_result = BaseAgent._format_execution_result
 
 

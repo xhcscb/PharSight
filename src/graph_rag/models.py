@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA_VERSION = "pharsight-graph-v1"
-EXTRACTOR_VERSION = "graphrag-v1"
+EXTRACTOR_VERSION = "graphrag-v1.1"
 
 
 class StrictModel(BaseModel):

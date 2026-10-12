@@ -175,6 +175,8 @@ class Config:
             ("graph_max_hops", 0, 2, 2),
             ("graph_top_k", 1, 30, 8),
             ("graph_query_planning_timeout", 1, 300, 30),
+            ("graph_build_concurrency", 1, 16, 4),
+            ("graph_json_max_tokens", 4096, 32768, 16384),
             ("graph_relation_candidate_limit", 1, 10000, 100),
         ):
             value = self.config.get(key, default)
@@ -194,6 +196,13 @@ class Config:
         if threshold < 0 or threshold > 1:
             raise ValueError("'graph_relation_confidence_threshold' must be between 0 and 1")
         self.config["graph_relation_confidence_threshold"] = threshold
+        try:
+            failure_ratio = float(self.config.get("graph_max_extraction_failure_ratio", 0.1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("'graph_max_extraction_failure_ratio' must be numeric") from exc
+        if failure_ratio < 0 or failure_ratio > 1:
+            raise ValueError("'graph_max_extraction_failure_ratio' must be between 0 and 1")
+        self.config["graph_max_extraction_failure_ratio"] = failure_ratio
 
     def _validate_live_search_config(self):
         """Validate the explicitly enabled live-search provider."""

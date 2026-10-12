@@ -33,6 +33,13 @@ def _loads(value: str | None, default: Any) -> Any:
     return json.loads(value)
 
 
+def _normalize_search_text(value: Any) -> str:
+    """Normalize common clinical-stage glyph variants before lexical seeding."""
+    return str(value or "").translate(
+        str.maketrans({"Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV"})
+    ).strip().lower()
+
+
 class GraphStore:
     """Own the versioned graph records and rebuildable graph projection."""
 
@@ -494,19 +501,47 @@ class GraphStore:
             connection.commit()
 
     def candidate_record_pairs(self, model_name: str, limit: int = 100) -> list[RelationCandidate]:
-        """Return blocked pairs sharing an entity and not assessed previously."""
+        """Return high-signal blocked pairs instead of generic company-only pairs."""
         with self.connect() as connection:
             rows = connection.execute(
                 """
                 SELECT DISTINCT a.record_id AS left_id, b.record_id AS right_id,
                        ra.text AS left_text, rb.text AS right_text,
-                       e.canonical_name AS shared_entity
+                       e.canonical_name AS shared_entity, e.entity_type AS shared_entity_type,
+                       ra.domain AS left_domain, rb.domain AS right_domain,
+                       json_extract(ra.attributes_json, '$.metric') AS left_metric,
+                       json_extract(rb.attributes_json, '$.metric') AS right_metric,
+                       json_extract(ra.attributes_json, '$.object') AS left_object,
+                       json_extract(rb.attributes_json, '$.object') AS right_object,
+                       json_extract(ra.attributes_json, '$.event_type') AS left_event_type,
+                       json_extract(rb.attributes_json, '$.event_type') AS right_event_type
                 FROM record_entities a
                 JOIN record_entities b ON a.entity_id=b.entity_id AND a.record_id < b.record_id
                 JOIN records ra ON ra.id=a.record_id
                 JOIN records rb ON rb.id=b.record_id
                 JOIN entities e ON e.id=a.entity_id
                 WHERE ra.review_status != 'rejected' AND rb.review_status != 'rejected'
+                  AND (
+                    e.entity_type IN (
+                      'Drug', 'Program', 'Brand', 'Target', 'Indication', 'Trial',
+                      'Policy', 'MarketSegment', 'TechnologyPlatform', 'Transaction'
+                    )
+                    OR (
+                      ra.domain = rb.domain AND (
+                        (json_extract(ra.attributes_json, '$.metric') IS NOT NULL AND
+                         json_extract(ra.attributes_json, '$.metric') =
+                         json_extract(rb.attributes_json, '$.metric'))
+                        OR
+                        (json_extract(ra.attributes_json, '$.object') IS NOT NULL AND
+                         json_extract(ra.attributes_json, '$.object') =
+                         json_extract(rb.attributes_json, '$.object'))
+                        OR
+                        (json_extract(ra.attributes_json, '$.event_type') IS NOT NULL AND
+                         json_extract(ra.attributes_json, '$.event_type') =
+                         json_extract(rb.attributes_json, '$.event_type'))
+                      )
+                    )
+                  )
                   AND NOT EXISTS (
                     SELECT 1 FROM relation_pair_reviews x
                     WHERE x.pair_key = CASE
@@ -514,10 +549,16 @@ class GraphStore:
                         ELSE b.record_id || '|' || a.record_id END
                       AND x.extractor_version=? AND x.model_name=?
                   )
-                ORDER BY a.record_id, b.record_id
+                ORDER BY
+                  CASE WHEN e.entity_type IN (
+                    'Drug', 'Program', 'Brand', 'Target', 'Indication', 'Trial',
+                    'Policy', 'MarketSegment', 'TechnologyPlatform', 'Transaction'
+                  ) THEN 0 ELSE 1 END,
+                  CASE WHEN ra.domain = rb.domain THEN 0 ELSE 1 END,
+                  a.record_id, b.record_id
                 LIMIT ?
                 """,
-                (EXTRACTOR_VERSION, model_name, max(1, int(limit))),
+                (EXTRACTOR_VERSION, model_name, max(1, int(limit)) * 10),
             ).fetchall()
         grouped: dict[tuple[str, str], RelationCandidate] = {}
         for row in rows:
@@ -531,7 +572,7 @@ class GraphStore:
                     shared_entities=[],
                 )
             grouped[key].shared_entities.append(row["shared_entity"])
-        return list(grouped.values())
+        return list(grouped.values())[: max(1, int(limit))]
 
     def find_entity_candidates(self, entity_type: str, names: list[str], limit: int = 12) -> list[dict[str, Any]]:
         """Find conservative same-type entity candidates by exact or contained names."""
@@ -587,7 +628,7 @@ class GraphStore:
 
     def search_seed_ids(self, terms: list[str], limit: int = 40) -> list[str]:
         """Return deterministically ranked entity, record and passage seed IDs."""
-        normalized = [term.strip().lower() for term in terms if term and term.strip()]
+        normalized = [_normalize_search_text(term) for term in terms if term and term.strip()]
         if not normalized:
             return []
         scored: dict[str, int] = {}
@@ -598,7 +639,9 @@ class GraphStore:
                 ("passages", ("text", "section_title")),
             ):
                 for row in connection.execute(f"SELECT * FROM {table}"):
-                    haystack = " ".join(str(row[column] or "") for column in columns).lower()
+                    haystack = _normalize_search_text(
+                        " ".join(str(row[column] or "") for column in columns)
+                    )
                     score = sum(3 if term == haystack else 1 for term in normalized if term in haystack)
                     if score:
                         scored[row["id"]] = max(scored.get(row["id"], 0), score)

@@ -78,6 +78,45 @@ def _load_document(path: Path, max_chars: int) -> str:
     )
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _index_pdf_document(
+    path: Path,
+    *,
+    source_id: str,
+    source_url: str,
+    title: str,
+    retrieved_at: str,
+) -> tuple[str, dict[str, Any]]:
+    """Extract every PDF page and persist a page-aware text index."""
+    try:
+        import pdfplumber
+    except ImportError as exc:  # pragma: no cover - dependency is optional at runtime
+        raise RuntimeError("Reading PDF evidence requires pdfplumber") from exc
+
+    from src.tools.document import build_document_index
+
+    with pdfplumber.open(path) as pdf:
+        pages = [page.extract_text() or "" for page in pdf.pages]
+    document_hash = _sha256_file(path)
+    index = build_document_index(
+        pages=pages,
+        source_url=source_url,
+        title=title,
+        parser="pdfplumber",
+        retrieved_at=retrieved_at,
+        document_hash=document_hash,
+        source_id=source_id,
+    )
+    return document_hash, index
+
+
 def _load_manifest_data(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw_text = path.read_text(encoding="utf-8")
     if path.suffix.lower() == ".json":
@@ -166,6 +205,9 @@ def load_evidence_manifest(
         local_path = source.get("local_path")
         inline_content = source.get("content")
         resolved_local_path: Path | None = None
+        document_index: dict[str, Any] | None = None
+        retrieved_at = source.get("retrieved_at") or datetime.now().astimezone().isoformat()
+        document_hash: str | None = None
         if local_path:
             candidate = Path(str(local_path))
             if not candidate.is_absolute():
@@ -173,7 +215,29 @@ def load_evidence_manifest(
             resolved_local_path = _inside_project(candidate)
             if not resolved_local_path.is_file():
                 raise ValueError(f"Evidence file not found for {source_id}: {resolved_local_path}")
-            content = _load_document(resolved_local_path, max_chars_per_source)
+            if resolved_local_path.suffix.lower() == ".pdf":
+                source_url = str(
+                    source.get("url")
+                    or resolved_local_path.relative_to(PROJECT_ROOT).as_posix()
+                )
+                document_hash, full_index = _index_pdf_document(
+                    resolved_local_path,
+                    source_id=source_id,
+                    source_url=source_url,
+                    title=str(source["title"]),
+                    retrieved_at=retrieved_at,
+                )
+                document_index = {
+                    key: value for key, value in full_index.items() if key != "chunks"
+                }
+                content = (
+                    "完整 PDF 已使用 pdfplumber 按页解析并建立持久文本索引："
+                    f"共 {full_index['page_count']} 页、{full_index['chunk_count']} 个文本块。"
+                    f"文档哈希：{document_hash}。事实检索必须读取分页索引，不得把 PDF "
+                    "或整本文本直接注入模型上下文。"
+                )
+            else:
+                content = _load_document(resolved_local_path, max_chars_per_source)
         elif inline_content is not None:
             content = str(inline_content)[:max_chars_per_source]
         else:
@@ -199,8 +263,7 @@ def load_evidence_manifest(
             "title": str(source["title"]),
             "published_at": published_at.isoformat(),
             "updated_at": updated_at.isoformat() if updated_at else None,
-            "retrieved_at": source.get("retrieved_at")
-            or datetime.now().astimezone().isoformat(),
+            "retrieved_at": retrieved_at,
             "reporting_period": source.get("reporting_period"),
             "url": source.get("url"),
             "external_id": source.get("external_id"),
@@ -217,9 +280,12 @@ def load_evidence_manifest(
             "entity_keys": source.get("entity_keys", {}),
             "limitations": source.get("limitations", []),
             "notes": source.get("notes"),
-            "document_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "document_hash": document_hash
+            or hashlib.sha256(content.encode("utf-8")).hexdigest(),
             "content": content,
         }
+        if document_index is not None:
+            record["document_index"] = document_index
         description = (
             f"{record['source_type']} | {record['publisher']} | "
             f"published {record['published_at']} | locator {record['locator'] or 'N/A'}"

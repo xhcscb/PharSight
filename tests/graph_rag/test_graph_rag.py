@@ -7,10 +7,23 @@ from types import SimpleNamespace
 import pytest
 
 from src.graph_rag import GraphBuilder, GraphRetriever, GraphStore
+from src.graph_rag.builder import _locate_evidence_quote
 from src.graph_rag.models import ReviewStatus
+from src.graph_rag.retriever import _reporting_periods, _tokens
 from src.tools import get_tool_by_name
 from src.tools.document.document_index import build_document_index
 from src.tools.graph import GraphEvidenceSearchTool
+
+
+def test_reporting_period_normalization():
+    assert _reporting_periods("恒瑞医药2026Q1第一季度报告") == {"2026Q1"}
+    assert _reporting_periods("2026年上半年经营情况") == {"2026H1"}
+    assert _reporting_periods("2026年第三季度") == {"2026Q3"}
+
+
+def test_clinical_stage_glyphs_share_search_tokens():
+    assert "iii" in _tokens("III期临床")
+    assert "iii" in _tokens("Ⅲ期临床")
 
 
 @pytest.mark.asyncio
@@ -135,6 +148,47 @@ def document_index():
     }
 
 
+def test_evidence_quote_locator_preserves_original_pdf_whitespace():
+    text = "营业收入 8,140,565,320.77\n上年同期 7,205,611,122.72"
+    located = _locate_evidence_quote(
+        text, "营业收入8,140,565,320.77 上年同期7,205,611,122.72"
+    )
+
+    assert located == (0, text)
+
+
+@pytest.mark.asyncio
+async def test_shared_quote_is_deduplicated_and_invalid_peer_record_is_isolated(tmp_path):
+    quote = "营业收入为100亿元"
+    valid_one = extraction_response(
+        "Observation",
+        quote,
+        quote,
+        {"metric": "营业收入", "value": 100, "value_nature": "reported"},
+    )["records"][0]
+    valid_two = extraction_response(
+        "Claim",
+        "营业收入同比增长",
+        quote,
+        {"predicate": "同比增长"},
+    )["records"][0]
+    invalid = dict(valid_two)
+    invalid["entities"] = [dict(valid_two["entities"][0], entity_type="Other")]
+    index = document_index()
+    index["chunks"] = [dict(index["chunks"][0], text=quote)]
+    report = await GraphBuilder(
+        GraphStore(tmp_path / "graph.sqlite3"),
+        MockLLM({"records": [valid_one, valid_two, invalid]}, {"relations": []}),
+        "deepseek-flash",
+        build_concurrency=1,
+    ).build_document(index)
+
+    assert report.status == "built"
+    assert report.evidence_count == 1
+    assert report.record_count == 2
+    assert any("rejected invalid record" in error for error in report.errors)
+
+
 @pytest.mark.asyncio
 async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path):
     observation_quote = "48周体重下降22.5%，结果为直接报告值"
@@ -200,7 +254,12 @@ async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path)
                         "confidence": 0.95,
                         "reason": "同一药物的临床结果与监管进展互补",
                         "comparability": {"shared_object": True},
-                    }
+                    },
+                    {
+                        "left_id": pair["left_id"],
+                        "right_id": pair["right_id"],
+                        "relation": "INCOMPAR",
+                    },
                 ]
             }
         return await original_generate(prompt, payload)
@@ -222,6 +281,22 @@ async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path)
     graph = store.to_networkx()
     assert not any(data.get("node_type") == "Source" for _, data in graph.nodes(data=True))
     assert any(data.get("relation") == "SUPPLEMENTS" for *_, data in graph.edges(data=True))
+
+    planner = MockLLM(
+        {
+            "entity_names": ["测试药物"],
+            "record_types": ["Observation", "Event"],
+            "domains": ["clinical", "regulatory"],
+            "keywords": ["临床结果", "监管进展"],
+            "relation_types": ["SUPPLEMENTS"],
+            "max_hops": 2,
+        }
+    )
+    pack = await GraphRetriever(store, planner, "deepseek-flash").search(
+        "测试药物的临床结果与监管进展如何互补？", backend="graph", top_k=5
+    )
+    assert any(hit.relation_reasons for hit in pack.hits)
+    assert any(len(path) == 2 for hit in pack.hits for path in hit.graph_paths)
 
     calls_before = call_count
     reused = await builder.build_document(document_index())
@@ -249,6 +324,43 @@ async def test_missing_evidence_quote_is_rejected_without_polluting_records(tmp_
     assert report.evidence_count == 0
     assert "evidence quote was not found" in report.errors[0]
     assert store.snapshot()["records"] == 0
+
+
+@pytest.mark.asyncio
+async def test_rejected_quote_does_not_shift_later_entity_resolution(tmp_path):
+    valid_quote = "48周体重下降22.5%，结果为直接报告值"
+    invalid = extraction_response(
+        "Claim",
+        "原文不存在的记录",
+        "完全不存在的引文",
+        {"predicate": "unsupported"},
+        entity_name="错误实体",
+    )["records"][0]
+    valid = extraction_response(
+        "Observation",
+        "正确实体48周体重下降22.5%",
+        valid_quote,
+        {
+            "object": "正确实体",
+            "metric": "体重变化百分比",
+            "value": -22.5,
+            "unit": "%",
+            "value_nature": "reported",
+        },
+        entity_name="正确实体",
+    )["records"][0]
+    index = document_index()
+    index["chunks"] = index["chunks"][:1]
+    store = GraphStore(tmp_path / "graph.sqlite3")
+
+    report = await GraphBuilder(
+        store, MockLLM({"records": [invalid, valid]}), "deepseek-flash"
+    ).build_document(index)
+
+    assert report.record_count == 1
+    with store.connect() as connection:
+        names = [row[0] for row in connection.execute("SELECT canonical_name FROM entities")]
+    assert names == ["正确实体"]
 
 
 @pytest.mark.asyncio
@@ -402,7 +514,7 @@ async def test_query_planning_timeout_uses_lexical_fallback(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_entity_resolution_uses_model_and_stays_conservative(tmp_path):
+async def test_entity_without_candidates_stays_temporary_without_extra_model_call(tmp_path):
     quote = "候选药物A进入临床阶段"
     response = extraction_response(
         "Claim",
@@ -441,7 +553,7 @@ async def test_ambiguous_entity_resolution_uses_model_and_stays_conservative(tmp
     report = await GraphBuilder(store, llm, "deepseek-flash").build_document(index)
     assert report.status == "built"
     entity = next(data for _, data in store.to_networkx().nodes(data=True) if data["node_type"] == "Entity")
-    assert entity["resolution_status"] == "needs_review"
+    assert entity["resolution_status"] == "temporary"
 
 
 @pytest.mark.asyncio

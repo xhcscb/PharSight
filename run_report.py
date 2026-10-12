@@ -106,15 +106,48 @@ async def _build_preloaded_graph(config, memory, model_name: str, logger) -> lis
         relation_confidence_threshold=config.config.get(
             "graph_relation_confidence_threshold", 0.7
         ),
+        build_concurrency=config.config.get("graph_build_concurrency", 4),
+        max_extraction_failure_ratio=config.config.get(
+            "graph_max_extraction_failure_ratio", 0.1
+        ),
+        json_max_tokens=config.config.get("graph_json_max_tokens", 16384),
     )
     reports = []
     for item in memory.get_collect_data():
         if not item.source_id or not isinstance(item.data, dict):
             continue
-        report = await builder.build_evidence_record(
-            item.data,
-            as_of=config.config.get("as_of"),
-        )
+        index_metadata = item.data.get("document_index")
+        if isinstance(index_metadata, dict) and index_metadata.get("document_hash"):
+            from src.tools.document import load_document_index
+
+            document_index = load_document_index(index_metadata["document_hash"])
+            document_index.update(
+                {
+                    "source_id": item.data.get("source_id"),
+                    "source_url": item.data.get("url")
+                    or item.data.get("local_path"),
+                    "publisher": item.data.get("publisher"),
+                    "title": item.data.get("title"),
+                    "published_at": item.data.get("published_at"),
+                    "retrieved_at": item.data.get("retrieved_at"),
+                    "reporting_period": item.data.get("reporting_period"),
+                    "metadata": {
+                        "source_type": item.data.get("source_type"),
+                        "reliability_tier": item.data.get("reliability_tier"),
+                        "limitations": item.data.get("limitations") or [],
+                        "local_path": item.data.get("local_path"),
+                    },
+                }
+            )
+            report = await builder.build_document(
+                document_index,
+                as_of=config.config.get("as_of"),
+            )
+        else:
+            report = await builder.build_evidence_record(
+                item.data,
+                as_of=config.config.get("as_of"),
+            )
         reports.append(report)
         logger.info(
             f"Preloaded GraphRAG build report: {report.model_dump(mode='json')}"

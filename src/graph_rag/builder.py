@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -13,16 +15,19 @@ from json_repair import loads as repair_json
 from .models import (
     BuildReport,
     DocumentNode,
+    EvidenceRelation,
     EvidenceSpan,
+    ExtractedRecord,
     ExtractionResponse,
     GraphBundle,
     GraphEdge,
     GraphEntity,
     GraphRecord,
     PassageNode,
-    RelationResponse,
 )
 from .store import GraphStore
+
+LOGGER = logging.getLogger(__name__)
 
 EXTRACTION_SYSTEM_PROMPT = """You extract auditable pharmaceutical investment-research records.
 Return JSON only. Never add facts that are not present in the passage. Preserve negation,
@@ -80,6 +85,30 @@ def _normalized_name(value: str) -> str:
     return re.sub(r"[\s\-_（）()]+", "", value).casefold()
 
 
+def _locate_evidence_quote(text: str, quote: str) -> tuple[int, str] | None:
+    """Locate an exact quote, tolerating only PDF/model whitespace normalization."""
+    start = text.find(quote)
+    if start >= 0:
+        return start, quote
+    compact_quote = "".join(char for char in quote if not char.isspace())
+    if not compact_quote:
+        return None
+    compact_text_chars: list[str] = []
+    original_positions: list[int] = []
+    for index, char in enumerate(text):
+        if char.isspace():
+            continue
+        compact_text_chars.append(char)
+        original_positions.append(index)
+    compact_text = "".join(compact_text_chars)
+    compact_start = compact_text.find(compact_quote)
+    if compact_start < 0:
+        return None
+    original_start = original_positions[compact_start]
+    original_end = original_positions[compact_start + len(compact_quote) - 1] + 1
+    return original_start, text[original_start:original_end]
+
+
 def _page_range_from_locator(locator: Any) -> tuple[int | None, int | None]:
     """Preserve explicit manifest page locators without inventing a page 1."""
     pages = [int(value) for value in re.findall(r"(?:第\s*)?(\d+)\s*页", str(locator or ""))]
@@ -99,12 +128,20 @@ class GraphBuilder:
         *,
         relation_candidate_limit: int = 100,
         relation_confidence_threshold: float = 0.7,
+        build_concurrency: int = 4,
+        max_extraction_failure_ratio: float = 0.1,
+        json_max_tokens: int = 16384,
     ):
         self.store = store
         self.llm = llm
         self.model_name = model_name
         self.relation_candidate_limit = max(1, int(relation_candidate_limit))
         self.relation_confidence_threshold = min(1.0, max(0.0, float(relation_confidence_threshold)))
+        self.build_concurrency = max(1, int(build_concurrency))
+        self.max_extraction_failure_ratio = min(
+            1.0, max(0.0, float(max_extraction_failure_ratio))
+        )
+        self.json_max_tokens = max(4096, int(json_max_tokens))
 
     async def _generate_json(self, system_prompt: str, payload: dict[str, Any]) -> Any:
         last_error: Exception | None = None
@@ -117,7 +154,9 @@ class GraphBuilder:
                     ],
                     include_stop_string=False,
                     temperature=0,
-                    max_tokens=8192,
+                    max_tokens=self.json_max_tokens,
+                    response_format={"type": "json_object"},
+                    extra_body={"thinking": {"type": "disabled"}},
                 )
                 parsed = _parse_json_payload(response)
                 if not isinstance(parsed, (dict, list)):
@@ -154,6 +193,16 @@ class GraphBuilder:
             if not bundle.records and any("extraction failed" in error for error in errors):
                 raise RuntimeError(
                     "No structured records were produced because passage extraction failed"
+                )
+            extraction_failures = sum("extraction failed" in error for error in errors)
+            passage_count = len(bundle.passages)
+            failure_ratio = extraction_failures / passage_count if passage_count else 1.0
+            if failure_ratio > self.max_extraction_failure_ratio:
+                raise RuntimeError(
+                    "Passage extraction failure ratio "
+                    f"{failure_ratio:.1%} exceeds configured maximum "
+                    f"{self.max_extraction_failure_ratio:.1%} "
+                    f"({extraction_failures}/{passage_count} passages)"
                 )
             self.store.replace_document_bundle(bundle)
             relation_count = await self.precompute_relations()
@@ -254,10 +303,97 @@ class GraphBuilder:
         entity_by_id: dict[str, GraphEntity] = {}
         edges: list[GraphEdge] = []
 
-        for chunk in document_index.get("chunks") or []:
+        chunks = [
+            chunk
+            for chunk in document_index.get("chunks") or []
+            if str(chunk.get("text") or "").strip()
+        ]
+        semaphore = asyncio.Semaphore(self.build_concurrency)
+
+        async def extract_chunk(chunk: dict[str, Any]):
             text = str(chunk.get("text") or "")
-            if not text.strip():
-                continue
+            chunk_id = str(chunk.get("chunk_id") or stable_id("chunk", document_hash, text))
+            extraction_payload = {
+                "document": {
+                    "title": document.title,
+                    "publisher": document.publisher,
+                    "published_at": document.published_at,
+                    "reporting_period": document.reporting_period,
+                    "as_of": as_of,
+                },
+                "passage": {"chunk_id": chunk_id, "text": text},
+            }
+            extraction = None
+            extraction_error: Exception | None = None
+            chunk_errors: list[str] = []
+            async with semaphore:
+                for _ in range(3):
+                    try:
+                        raw = await self._generate_json(
+                            EXTRACTION_SYSTEM_PROMPT, extraction_payload
+                        )
+                        if not isinstance(raw, dict) or not isinstance(
+                            raw.get("records", []), list
+                        ):
+                            raise ValueError("extraction payload requires a records list")
+                        valid_records = []
+                        for record_index, record_payload in enumerate(raw.get("records", [])):
+                            try:
+                                valid_records.append(
+                                    ExtractedRecord.model_validate(record_payload)
+                                )
+                            except Exception as exc:
+                                chunk_errors.append(
+                                    f"{chunk_id}: rejected invalid record {record_index}: {exc}"
+                                )
+                        extraction = ExtractionResponse(records=valid_records)
+                        break
+                    except Exception as exc:
+                        extraction_error = exc
+                        if "valid JSON after 3 attempts" in str(exc):
+                            break
+            if extraction is None:
+                chunk_errors.append(f"{chunk_id}: extraction failed: {extraction_error}")
+                return extraction, [], chunk_errors
+
+            extracted_entities = [
+                entity for item in extraction.records for entity in item.entities
+            ]
+            resolved_entities = []
+            if extracted_entities:
+                async with semaphore:
+                    resolved_entities = await self._resolve_entities(
+                        extracted_entities, text, chunk_errors
+                    )
+            return extraction, resolved_entities, chunk_errors
+
+        extraction_results: list[Any] = [None] * len(chunks)
+
+        async def indexed_extract(index: int, chunk: dict[str, Any]):
+            return index, await extract_chunk(chunk)
+
+        tasks = [
+            asyncio.create_task(indexed_extract(index, chunk))
+            for index, chunk in enumerate(chunks)
+        ]
+        completed_count = 0
+        for completed in asyncio.as_completed(tasks):
+            index, result = await completed
+            extraction_results[index] = result
+            completed_count += 1
+            if completed_count == len(chunks) or completed_count % 10 == 0:
+                LOGGER.info(
+                    "GraphRAG extraction progress: document=%s completed=%d/%d",
+                    document.source_id or document.document_hash[:12],
+                    completed_count,
+                    len(chunks),
+                )
+
+        for chunk, (extraction, resolved_chunk_entities, chunk_errors) in zip(
+            chunks, extraction_results
+        ):
+            errors.extend(chunk_errors)
+            text = str(chunk.get("text") or "")
             chunk_id = str(chunk.get("chunk_id") or stable_id("chunk", document_hash, text))
             passage_id = stable_id("passage", document_hash, chunk_id)
             passages.append(
@@ -282,37 +418,21 @@ class GraphBuilder:
                     review_status="approved",
                 )
             )
-            extraction = None
-            extraction_error: Exception | None = None
-            extraction_payload = {
-                "document": {
-                    "title": document.title,
-                    "publisher": document.publisher,
-                    "published_at": document.published_at,
-                    "reporting_period": document.reporting_period,
-                    "as_of": as_of,
-                },
-                "passage": {"chunk_id": chunk_id, "text": text},
-            }
-            for _ in range(3):
-                try:
-                    raw = await self._generate_json(EXTRACTION_SYSTEM_PROMPT, extraction_payload)
-                    extraction = ExtractionResponse.model_validate(raw)
-                    break
-                except Exception as exc:
-                    extraction_error = exc
-                    if "valid JSON after 3 attempts" in str(exc):
-                        break
             if extraction is None:
-                errors.append(f"{chunk_id}: extraction failed: {extraction_error}")
                 continue
 
+            entity_cursor = 0
             for item in extraction.records:
-                quote = item.evidence_quote
-                start = text.find(quote)
-                if start < 0:
+                entity_count = len(item.entities)
+                resolved_entities = resolved_chunk_entities[
+                    entity_cursor : entity_cursor + entity_count
+                ]
+                entity_cursor += entity_count
+                located_quote = _locate_evidence_quote(text, item.evidence_quote)
+                if located_quote is None:
                     errors.append(f"{chunk_id}: rejected record because evidence quote was not found")
                     continue
+                start, quote = located_quote
                 evidence_id = stable_id("evidence", passage_id, start, quote)
                 record_id = stable_id(
                     "record",
@@ -367,7 +487,6 @@ class GraphBuilder:
                         ),
                     ]
                 )
-                resolved_entities = await self._resolve_entities(item.entities, text, errors)
                 for extracted_entity, resolution in zip(item.entities, resolved_entities):
                     identity = extracted_entity.external_ids or {
                         "name": _normalized_name(resolution["canonical_name"])
@@ -405,10 +524,10 @@ class GraphBuilder:
         return GraphBundle(
             document=document,
             passages=passages,
-            evidence=evidence,
-            records=records,
+            evidence=list({item.id: item for item in evidence}.values()),
+            records=list({item.id: item for item in records}.values()),
             entities=list(entity_by_id.values()),
-            edges=edges,
+            edges=list({item.id: item for item in edges}.values()),
         )
 
     async def _resolve_entities(self, entities, passage_text: str, errors: list[str]) -> list[dict[str, Any]]:
@@ -427,6 +546,13 @@ class GraphBuilder:
                 entity.entity_type.value,
                 [entity.name, *entity.aliases],
             )
+            if not candidates:
+                resolved[index] = {
+                    "canonical_name": entity.name.strip(),
+                    "matched_entity_id": None,
+                    "resolution_status": "temporary",
+                }
+                continue
             unresolved_payload.append(
                 {
                     "input_index": index,
@@ -468,20 +594,35 @@ class GraphBuilder:
 
     async def precompute_relations(self) -> int:
         """Classify blocked record pairs and persist accepted global relations."""
-        candidates = self.store.candidate_record_pairs(
-            self.model_name, self.relation_candidate_limit
-        )
+        # Keep one JSON response comfortably below provider output limits. The
+        # configured candidate limit remains the per-build ceiling, while later
+        # builds or explicit maintenance calls continue with unreviewed pairs.
+        batch_limit = min(self.relation_candidate_limit, 100)
+        candidates = self.store.candidate_record_pairs(self.model_name, batch_limit)
         if not candidates:
             return 0
         raw = await self._generate_json(
             RELATION_SYSTEM_PROMPT,
             {"pairs": [candidate.model_dump(mode="json") for candidate in candidates]},
         )
-        response = RelationResponse.model_validate(raw)
+        relation_payloads = raw.get("relations", []) if isinstance(raw, dict) else []
+        valid_relations: list[EvidenceRelation] = []
+        invalid_pairs: set[tuple[str, str]] = set()
+        for index, payload in enumerate(relation_payloads):
+            try:
+                valid_relations.append(EvidenceRelation.model_validate(payload))
+            except Exception as exc:
+                if isinstance(payload, dict):
+                    left_id = str(payload.get("left_id") or "")
+                    right_id = str(payload.get("right_id") or "")
+                    if left_id and right_id:
+                        invalid_pairs.add((left_id, right_id))
+                        invalid_pairs.add((right_id, left_id))
+                LOGGER.warning("Rejected invalid relation %d: %s", index, exc)
         allowed_pairs = {(item.left_id, item.right_id) for item in candidates}
         count = 0
         reviewed_pairs: set[tuple[str, str]] = set()
-        for relation in response.relations:
+        for relation in valid_relations:
             pair = (relation.left_id, relation.right_id)
             reverse = (relation.right_id, relation.left_id)
             if pair not in allowed_pairs and reverse not in allowed_pairs:
@@ -505,7 +646,7 @@ class GraphBuilder:
             count += 1
         for candidate in candidates:
             pair = (candidate.left_id, candidate.right_id)
-            if pair not in reviewed_pairs:
+            if pair not in reviewed_pairs and pair not in invalid_pairs:
                 self.store.record_no_relation(
                     candidate.left_id, candidate.right_id, self.model_name
                 )

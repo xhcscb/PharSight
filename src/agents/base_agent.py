@@ -660,25 +660,40 @@ class BaseAgent:
         response = response.replace("<think>", "\n").replace("</think>", "\n")
         if not response.strip():
             return "invalid_response", "The model returned an empty response. Retry the requested task."
-        detached_code = re.search(
-            r"<execute>\s*(?:Python\s*(?:代码|code)?|代码)?\s*</execute>\s*"
-            r"```(?:python|py)?\s*\n?(.*?)\n?```",
-            response,
+        execute_pattern = re.compile(
+            r"<execute>(.*?)</execute>"
+            r"(?:\s*```(?:python|py)?\s*\n?(.*?)\n?```)?",
             re.DOTALL | re.IGNORECASE,
         )
+        execute_matches = list(execute_pattern.finditer(response))
         terminal_pattern = re.compile(
             r"<(final_result|report|outline|draft)>(.*?)</\1>",
             re.DOTALL | re.IGNORECASE,
         )
         terminal_matches = list(terminal_pattern.finditer(response))
         if terminal_matches and (
-            detached_code is None or terminal_matches[-1].start() > detached_code.start()
+            not execute_matches or terminal_matches[-1].start() > execute_matches[-1].start()
         ):
             terminal = terminal_matches[-1]
             action = "final" if terminal.group(1).lower() == "final_result" else terminal.group(1).lower()
             return action, terminal.group(2).strip()
-        if detached_code:
-            return "code", detached_code.group(1).strip()
+        if execute_matches:
+            code_blocks: list[str] = []
+            for execute_match in execute_matches:
+                inline = execute_match.group(1).strip()
+                detached = execute_match.group(2)
+                if detached is not None and re.fullmatch(
+                    r"(?:Python\s*(?:代码|code)?|代码)?", inline, re.IGNORECASE
+                ):
+                    code = detached.strip()
+                else:
+                    code = self._strip_markdown_code_fence(inline)
+                if code:
+                    code_blocks.append(code)
+            if code_blocks:
+                # Providers sometimes emit several read/compute actions in one turn.
+                # Execute all of them in order so evidence requests are not silently lost.
+                return "code", "\n\n".join(code_blocks)
         dsml_action = self._parse_dsml_tool_calls(response)
         if dsml_action is not None:
             return dsml_action
