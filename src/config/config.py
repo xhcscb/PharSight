@@ -172,8 +172,10 @@ class Config:
         if not isinstance(self.config.get("graph_build_on_ingest", True), bool):
             raise ValueError("'graph_build_on_ingest' must be a boolean")
         for key, minimum, maximum, default in (
-            ("graph_max_hops", 0, 2, 2),
+            ("graph_max_hops", 0, 4, 2),
             ("graph_top_k", 1, 30, 8),
+            ("graph_claim_candidate_pool", 20, 1000, 120),
+            ("graph_query_relation_record_limit", 2, 50, 24),
             ("graph_query_planning_timeout", 1, 300, 30),
             ("graph_build_concurrency", 1, 16, 4),
             ("graph_json_max_tokens", 4096, 32768, 16384),
@@ -190,7 +192,7 @@ class Config:
                 raise ValueError(f"'{key}' must be between {minimum} and {maximum}")
             self.config[key] = parsed
         try:
-            threshold = float(self.config.get("graph_relation_confidence_threshold", 0.7))
+            threshold = float(self.config.get("graph_relation_confidence_threshold", 0.8))
         except (TypeError, ValueError) as exc:
             raise ValueError("'graph_relation_confidence_threshold' must be numeric") from exc
         if threshold < 0 or threshold > 1:

@@ -2,7 +2,7 @@
 
 ## 状态与约束
 
-本文同时描述当前 V1 实现与后续目标架构。V1 已在不替换 FinSight 编排主干的前提下增加医药双模式、受控证据清单、公开/本地 PDF 完整解析、分页分块、三层 GraphRAG、Hybrid 检索、模式提示词、中文大纲、截止日控制及精确引用校验。2026-10-12 已用当前 DeepSeek 服务别名和三份共 418 页 PDF 完成“解析 → 449 个文本块 → 构图/关系 → Hybrid 检索 → 分析 → 11 节 Markdown 研报”的多来源技术闭环；项目标准 Python 3.11、行业模式和领域人工验收仍未完成。
+本文同时描述当前 V1 实现与后续目标架构。V1 已在不替换 FinSight 编排主干的前提下增加医药双模式、受控证据清单、公开/本地 PDF 完整解析、分页分块、三层 GraphRAG、Hybrid 检索、模式提示词、中文大纲、截止日控制及精确引用校验。2026-10-19 当前 GraphRAG 运行时为 Schema v1.2 / extractor v1.3，已增加来源断言—规范命题—独立研究身份、双时间字段、多通道 RRF、CandidatePool/ActiveEvidence 和带审计属性的 query edge；迭代桥接、路径验证和时间仲裁仍属 V2 后续。2026-10-12 的 418 页报告为历史 V1.1 基线；项目标准 Python 3.11、行业模式和领域人工验收仍未完成。
 
 Pharsight 是保留完整历史的 FinSight GPL-3.0 派生项目，初始基线为 `8fc5bce28ac201c713219a47d30367c6a84342f4`。同级 `../FinSight` 是不可修改的参照。所有实现、配置、测试、输出和生成产物都必须位于 Pharsight 仓库及其忽略的运行目录内。
 
@@ -159,6 +159,8 @@ V1 通过 YAML/JSON 来源清单或公开 PDF 工具把上述字段映射到 `To
 | ADR-015 | 2026-10-10 | GraphRAG V1 采用无 Source 节点的三层语义图、SQLite 权威存储与 NetworkX 投影，并只对共享实体候选预计算七类关系 | 保留 Document/Passage/Evidence 溯源、Claim/Observation/Event 语义与 Entity 身份；Graph/Hybrid 通过 EvidenceBackend 工具接入且默认不替换 Chunk 基线 |
 | ADR-016 | 2026-10-10 | 受控运行将 Graph/Hybrid 检索作用域固定为当前批准 source ID；空抽取、Schema 外 QueryPlan 和不闭合终止块失败关闭 | BM25 回退不能越过 manifest/Memory 边界；查询规划保留主模型但限时 30 秒并可词法降级；失败构图保持可重试且不留下“built”假阳性 |
 | ADR-017 | 2026-10-10 | 本地文本 PDF 必须先完整解析并持久化页级索引，构图模型只读取解析文本；Graph JSON 调用关闭思考模式并使用严格 JSON；全局关系先做高信号实体/同口径阻塞 | 不让 VLM 直接读 PDF；Memory 不承载全文；构图速度可控且同一哈希幂等；公司/监管机构等泛实体不再主导候选；Graph 命中先按 chunk 聚合再截断 |
+| ADR-018 | 2026-10-17 | GraphRAG 改为“离线原子记录、在线查询子图”：ingest 只保存带材料性和原文证据的 Claim/Observation/Event 及实体角色；query 先宽召回相关记录，再对阻塞候选对判定七类临时关系 | 关系只解释当前问题，不再由全库静态共现决定；历史持久语义边不参与遍历；Evidence Pack 新增可审计 `query_edges`。代价是查询多一次关系模型调用，需要分别评测 Claim Recall@pool、关系精确率、延迟和费用 |
+| ADR-019 | 2026-10-19 | V2 采用 Claim Store + Hybrid Index + Query Evidence Graph + Verified Reasoner + Temporal Arbitration；运行时先落地来源断言/规范命题/独立研究身份、双时间、RRF 和 CandidatePool/ActiveEvidence 契约 | 三层持久图不增加 Source 或推理节点；同一研究的多来源断言不再被当成独立证据；关系语义和 query utility 分离。未实现的 Dense、迭代桥接、Beam、verifier 和仲裁必须显示 `not_run`/待办，不能由文档目标冒充现状 |
 
 未来决策记录须注明问题、考虑过的方案、决定、影响、负责人及取代关系。
 

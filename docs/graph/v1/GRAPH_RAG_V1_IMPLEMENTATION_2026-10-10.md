@@ -1,5 +1,8 @@
 # Pharsight GraphRAG V1 实现说明
 
+> **历史文档提示（2026-10-17）：** 本文对应首版实现，当前 `graphrag-v1.2` 规范、运行结果
+> 和文档分层请从 [GraphRAG V1 文档导航](./README.md) 阅读。
+
 > 日期：2026-10-10
 > 运行时 Schema：`pharsight-graph-v1`
 > 状态：首版代码与离线相关回归完成，等待 Python 3.11 与真实冻结语料验收

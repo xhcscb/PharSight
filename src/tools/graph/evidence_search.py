@@ -51,6 +51,11 @@ class GraphEvidenceSearchTool(Tool):
             llm=llm,
             model_name=model_name,
             planner_timeout_seconds=values.get("graph_query_planning_timeout", 30),
+            claim_candidate_pool=values.get("graph_claim_candidate_pool", 120),
+            query_relation_record_limit=values.get("graph_query_relation_record_limit", 24),
+            relation_confidence_threshold=values.get(
+                "graph_relation_confidence_threshold", 0.8
+            ),
         )
         self._backend = str(values.get("retrieval_backend", "hybrid"))
         self._max_hops = int(values.get("graph_max_hops", 2))
@@ -88,7 +93,22 @@ class GraphEvidenceSearchTool(Tool):
                 ToolResult(
                     name=self.name,
                     description="No graph or chunk evidence matched the query.",
-                    data={"query": query, "hits": [], "content": "", "warnings": pack.warnings},
+                    data={
+                        "query": query,
+                        "hits": [],
+                        "content": "",
+                        "query_plan": pack.query_plan.model_dump(mode="json"),
+                        "candidate_record_ids": pack.candidate_record_ids,
+                        "active_record_ids": pack.active_record_ids,
+                        "query_edges": [edge.model_dump(mode="json") for edge in pack.query_edges],
+                        "retrieval_rounds": [
+                            item.model_dump(mode="json") for item in pack.retrieval_rounds
+                        ],
+                        "open_gaps": pack.open_gaps,
+                        "verification_status": pack.verification_status,
+                        "trace_id": pack.trace_id,
+                        "warnings": pack.warnings,
+                    },
                     source="local GraphRAG index",
                 )
             ]
@@ -131,6 +151,15 @@ class GraphEvidenceSearchTool(Tool):
                 ],
                 "query": query,
                 "query_plan": pack.query_plan.model_dump(mode="json"),
+                "query_edges": [edge.model_dump(mode="json") for edge in pack.query_edges],
+                "candidate_record_ids": pack.candidate_record_ids,
+                "active_record_ids": pack.active_record_ids,
+                "retrieval_rounds": [
+                    item.model_dump(mode="json") for item in pack.retrieval_rounds
+                ],
+                "open_gaps": pack.open_gaps,
+                "verification_status": pack.verification_status,
+                "trace_id": pack.trace_id,
                 "retrieval_hits": retrieval_hits,
                 "content": "\n\n".join(content_parts),
             }

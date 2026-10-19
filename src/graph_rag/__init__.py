@@ -10,7 +10,10 @@ from .models import (
     GraphEdge,
     GraphEntity,
     GraphRecord,
+    MaterialityProfile,
+    QueryGraphEdge,
     QueryPlan,
+    RetrievalRound,
 )
 from .retriever import GraphRetriever
 from .store import GraphStore
@@ -27,5 +30,8 @@ __all__ = [
     "GraphRecord",
     "GraphRetriever",
     "GraphStore",
+    "MaterialityProfile",
+    "QueryGraphEdge",
     "QueryPlan",
+    "RetrievalRound",
 ]

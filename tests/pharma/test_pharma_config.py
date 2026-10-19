@@ -63,7 +63,11 @@ def test_pharma_config_validates_graph_retrieval_controls():
     with pytest.raises(ValueError, match="retrieval_backend"):
         invalid_backend._validate_research_config()
 
-    invalid_hops = _config_for_validation(graph_max_hops=3)
+    max_hops = _config_for_validation(graph_max_hops=4)
+    max_hops._validate_research_config()
+    assert max_hops.config["graph_max_hops"] == 4
+
+    invalid_hops = _config_for_validation(graph_max_hops=5)
     with pytest.raises(ValueError, match="graph_max_hops"):
         invalid_hops._validate_research_config()
 

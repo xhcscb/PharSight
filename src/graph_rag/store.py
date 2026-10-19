@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -38,6 +39,11 @@ def _normalize_search_text(value: Any) -> str:
     return str(value or "").translate(
         str.maketrans({"Ⅰ": "I", "Ⅱ": "II", "Ⅲ": "III", "Ⅳ": "IV"})
     ).strip().lower()
+
+
+def _stable_id(prefix: str, *parts: Any) -> str:
+    canonical = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+    return f"{prefix}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:24]}"
 
 
 class GraphStore:
@@ -105,6 +111,15 @@ class GraphStore:
                     domain TEXT NOT NULL,
                     epistemic_status TEXT NOT NULL,
                     polarity TEXT NOT NULL,
+                    assertion_kind TEXT NOT NULL DEFAULT 'unknown',
+                    proposition_json TEXT NOT NULL DEFAULT '{}',
+                    qualifiers_json TEXT NOT NULL DEFAULT '{}',
+                    canonical_proposition_id TEXT NOT NULL DEFAULT '',
+                    origin_study_id TEXT,
+                    valid_from TEXT,
+                    valid_to TEXT,
+                    recorded_at TEXT NOT NULL DEFAULT '',
+                    materiality_json TEXT NOT NULL DEFAULT '{}',
                     attributes_json TEXT NOT NULL,
                     evidence_ids_json TEXT NOT NULL,
                     review_status TEXT NOT NULL,
@@ -179,11 +194,132 @@ class GraphStore:
                 CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(canonical_name);
                 """
             )
+            record_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(records)").fetchall()
+            }
+            record_migrations = {
+                "materiality_json": "TEXT NOT NULL DEFAULT '{}'",
+                "assertion_kind": "TEXT NOT NULL DEFAULT 'unknown'",
+                "proposition_json": "TEXT NOT NULL DEFAULT '{}'",
+                "qualifiers_json": "TEXT NOT NULL DEFAULT '{}'",
+                "canonical_proposition_id": "TEXT NOT NULL DEFAULT ''",
+                "origin_study_id": "TEXT",
+                "valid_from": "TEXT",
+                "valid_to": "TEXT",
+                "recorded_at": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in record_migrations.items():
+                if column not in record_columns:
+                    connection.execute(f"ALTER TABLE records ADD COLUMN {column} {definition}")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_proposition ON records(canonical_proposition_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_origin_study ON records(origin_study_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_records_recorded_at ON records(recorded_at)"
+            )
+            self._backfill_record_semantics(connection)
             connection.execute(
                 "INSERT OR REPLACE INTO graph_meta(key, value) VALUES('schema_version', ?)",
                 (SCHEMA_VERSION,),
             )
             connection.commit()
+
+    @staticmethod
+    def _backfill_record_semantics(connection: sqlite3.Connection) -> None:
+        """Deterministically make legacy v1.2 records queryable under the v1.3 contract."""
+        qualifier_keys = {
+            "trial_id",
+            "phase",
+            "population",
+            "line_of_therapy",
+            "arm",
+            "design",
+            "comparator",
+            "dose",
+            "endpoint",
+            "estimand",
+            "analysis_set",
+            "timepoint",
+            "reporting_period",
+            "geography",
+            "unit",
+            "currency",
+            "conditions",
+        }
+        proposition_keys = {
+            "subject",
+            "predicate",
+            "object",
+            "metric",
+            "value",
+            "event_type",
+            "new_status",
+        }
+        rows = connection.execute(
+            """SELECT * FROM records
+               WHERE canonical_proposition_id='' OR recorded_at=''"""
+        ).fetchall()
+        for row in rows:
+            attributes = _loads(row["attributes_json"], {})
+            proposition = _loads(row["proposition_json"], {}) or {
+                key: attributes[key] for key in proposition_keys if key in attributes
+            }
+            qualifiers = _loads(row["qualifiers_json"], {}) or {
+                key: value
+                for key, value in attributes.items()
+                if key in qualifier_keys and value is not None
+            }
+            assertion_kind = row["assertion_kind"] or "unknown"
+            if assertion_kind == "unknown":
+                if row["record_type"] == "Observation" and row["domain"] == "clinical":
+                    assertion_kind = "study_reported_observation"
+                elif row["record_type"] == "Observation" and row["domain"] == "financial":
+                    assertion_kind = "financial_reported_observation"
+                elif row["record_type"] == "Event" and row["domain"] == "regulatory":
+                    assertion_kind = "regulatory_status"
+                elif row["epistemic_status"] == "forecast":
+                    assertion_kind = "forecast"
+                else:
+                    assertion_kind = "source_assertion"
+            canonical_id = row["canonical_proposition_id"] or _stable_id(
+                "proposition",
+                row["record_type"],
+                proposition,
+                qualifiers,
+                row["polarity"],
+                row["epistemic_status"],
+            )
+            origin_study_id = row["origin_study_id"] or attributes.get("trial_id")
+            recorded_at = row["recorded_at"]
+            if not recorded_at:
+                evidence_ids = _loads(row["evidence_ids_json"], [])
+                if evidence_ids:
+                    timestamp = connection.execute(
+                        """SELECT d.retrieved_at
+                           FROM evidence_spans es
+                           JOIN passages p ON p.id=es.passage_id
+                           JOIN documents d ON d.id=p.document_id
+                           WHERE es.id=?""",
+                        (evidence_ids[0],),
+                    ).fetchone()
+                    recorded_at = timestamp[0] if timestamp else ""
+            connection.execute(
+                """UPDATE records SET assertion_kind=?, proposition_json=?, qualifiers_json=?,
+                          canonical_proposition_id=?, origin_study_id=?, recorded_at=?
+                   WHERE id=?""",
+                (
+                    assertion_kind,
+                    _json(proposition),
+                    _json(qualifiers),
+                    canonical_id,
+                    origin_study_id,
+                    recorded_at or datetime.now().astimezone().isoformat(),
+                    row["id"],
+                ),
+            )
 
     def is_current(self, document_hash: str, model_name: str) -> bool:
         """Return whether the document has a successful current-version build."""
@@ -351,7 +487,14 @@ class GraphStore:
                         ),
                     )
                 connection.executemany(
-                    "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    """INSERT INTO records(
+                           id, record_type, text, domain, epistemic_status, polarity,
+                           assertion_kind, proposition_json, qualifiers_json,
+                           canonical_proposition_id, origin_study_id, valid_from, valid_to,
+                           recorded_at,
+                           materiality_json, attributes_json, evidence_ids_json, review_status,
+                           extractor_version, model_name
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
                         (
                             item.id,
@@ -360,6 +503,15 @@ class GraphStore:
                             item.domain,
                             item.epistemic_status,
                             item.polarity,
+                            item.assertion_kind,
+                            _json(item.proposition),
+                            _json(item.qualifiers),
+                            item.canonical_proposition_id,
+                            item.origin_study_id,
+                            item.valid_from,
+                            item.valid_to,
+                            item.recorded_at,
+                            _json(item.materiality.model_dump(mode="json")),
                             _json(item.attributes),
                             _json(item.evidence_ids),
                             item.review_status.value,
@@ -599,6 +751,129 @@ class GraphStore:
                     if len(candidates) >= limit:
                         break
         return candidates
+
+    def search_record_candidates(
+        self,
+        terms: list[str],
+        *,
+        record_types: set[str] | None = None,
+        domains: set[str] | None = None,
+        source_id: str | None = None,
+        document_hash: str | None = None,
+        allowed_source_ids: set[str] | None = None,
+        limit: int = 120,
+    ) -> list[dict[str, Any]]:
+        """Return a high-recall pool of atomic records without requiring prebuilt relations."""
+        normalized_terms = list(
+            dict.fromkeys(
+                _normalize_search_text(term)
+                for term in terms
+                if term and _normalize_search_text(term)
+            )
+        )
+        with self.connect() as connection:
+            entity_names: dict[str, list[str]] = {}
+            for row in connection.execute(
+                """SELECT e.source_id AS record_id, n.canonical_name
+                   FROM edges e JOIN entities n ON n.id=e.target_id
+                   JOIN records r ON r.id=e.source_id
+                   WHERE e.origin='extracted'"""
+            ):
+                entity_names.setdefault(row["record_id"], []).append(row["canonical_name"])
+            rows = connection.execute(
+                """SELECT r.*, es.id AS evidence_id, es.quote, p.id AS passage_id,
+                          p.chunk_id, p.text AS passage_text, p.page_start, p.page_end,
+                          p.section_title, d.id AS document_id, d.document_hash, d.source_id,
+                          d.title, d.publisher, d.source_url, d.published_at, d.retrieved_at,
+                          d.reporting_period, d.metadata_json
+                   FROM records r
+                   JOIN json_each(r.evidence_ids_json) je ON CAST(je.key AS INTEGER)=0
+                   JOIN evidence_spans es ON es.id=je.value
+                   JOIN passages p ON p.id=es.passage_id
+                   JOIN documents d ON d.id=p.document_id
+                   WHERE r.review_status != 'rejected'"""
+            ).fetchall()
+        candidates: list[dict[str, Any]] = []
+        allowed = {item.upper() for item in allowed_source_ids} if allowed_source_ids is not None else None
+        for row in rows:
+            item = dict(row)
+            current_source = str(item.get("source_id") or "")
+            if source_id and current_source.upper() != source_id.upper():
+                continue
+            if allowed is not None and current_source.upper() not in allowed:
+                continue
+            if document_hash and item.get("document_hash") != document_hash:
+                continue
+            names = entity_names.get(item["id"], [])
+            fields = {
+                "claim": _normalize_search_text(item.get("text")),
+                "proposition": _normalize_search_text(item.get("proposition_json")),
+                "qualifier": _normalize_search_text(
+                    " ".join(
+                        (str(item.get("qualifiers_json") or ""), str(item.get("attributes_json") or ""))
+                    )
+                ),
+                "source_span": _normalize_search_text(item.get("quote")),
+                "section": _normalize_search_text(item.get("section_title")),
+                "entity": _normalize_search_text(" ".join(names)),
+                "metadata": _normalize_search_text(
+                    " ".join(
+                        (
+                            str(item.get("reporting_period") or ""),
+                            str(item.get("origin_study_id") or ""),
+                            str(item.get("assertion_kind") or ""),
+                        )
+                    )
+                ),
+            }
+            signals = {
+                channel: sum(1.0 + min(len(term), 12) / 12 for term in normalized_terms if term in text)
+                for channel, text in fields.items()
+            }
+            if normalized_terms and not any(signals.values()):
+                continue
+            signals["entity"] += 4.0 * sum(
+                term == _normalize_search_text(name)
+                for term in normalized_terms
+                for name in names
+            )
+            signals["type_domain"] = 0.0
+            if record_types and item["record_type"] in record_types:
+                signals["type_domain"] += 0.05
+            if domains and item["domain"] in domains:
+                signals["type_domain"] += 0.04
+            materiality = _loads(item.get("materiality_json"), {})
+            signals["materiality"] = float(materiality.get("score") or 0.5) * 0.05
+            item["entity_names"] = sorted(set(names))
+            item["materiality"] = materiality
+            item["retrieval_signals"] = signals
+            candidates.append(item)
+        # Reciprocal-rank fusion keeps heterogeneous channels comparable without
+        # pretending their raw lexical scores share one calibrated scale.
+        channel_weights = {
+            "claim": 1.0,
+            "proposition": 1.1,
+            "qualifier": 1.1,
+            "source_span": 0.9,
+            "section": 0.5,
+            "entity": 1.25,
+            "metadata": 0.9,
+        }
+        for item in candidates:
+            item["retrieval_score"] = (
+                item["retrieval_signals"]["type_domain"]
+                + item["retrieval_signals"]["materiality"]
+            )
+        for channel, weight in channel_weights.items():
+            ranked = sorted(
+                (item for item in candidates if item["retrieval_signals"][channel] > 0),
+                key=lambda item: (-item["retrieval_signals"][channel], item["id"]),
+            )
+            for rank, item in enumerate(ranked, start=1):
+                item["retrieval_score"] += weight / (60 + rank)
+        return sorted(candidates, key=lambda item: (-item["retrieval_score"], item["id"]))[
+            : max(1, int(limit))
+        ]
 
     def to_networkx(self) -> nx.MultiDiGraph:
         """Rebuild the complete traversable property-graph projection from SQLite."""

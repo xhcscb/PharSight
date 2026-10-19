@@ -111,9 +111,12 @@ P0 是阻塞里程碑的任务；P1 重要但不阻塞；P2 为可延后的改�
 | V1-008 | 接入 PaddleOCR 文档工具，使 Deep Search 命中的公开 PDF 可受限下载、解析并规范化为引用证据 | 上市公司＋行业 | 数据与工具 | V1-004；PaddleOCR 账号或文本 PDF | 凭据不入库；防私网访问与超限下载；保留 URL、获取时间、文件哈希、解析器和页数；无网络单测通过 | 待审（2026-09-22 恒瑞医药 189 页年报、缓存复用、489 块索引、任务检索和最终引用已验证；Python 3.11 待验） |
 | V1-009 | 固化“搜索结果页→抽取并校验目标 PDF→单次解析→精确来源编号”的确定性路由 | 上市公司＋行业 | 数据与工具＋智能体与报告 | V1-008 | 不猜本地清单；校验文档标题/报告期/发布者；同一文档不重复 OCR；报告只引用完整 `source_id` | 进行中（附件抽取、文档类型/报告期校验、缓存和精确编号已实现并通过单测；发布者归属及完整实时搜索验收待办） |
 | V1-010 | 将整本 PDF 分页分块，建立持久索引并按研究任务返回可定位证据 | 上市公司＋行业 | 数据与工具 | V1-008 | 不漏页；块不跨页；结果含文档哈希、页码、块号和父来源编号；同块跨任务去重；真实长文跑通 | 待审（189 页/489 块真实样例及单测通过；向量/图混合检索待后续对照评测） |
-| GRAG-001 | 实现无 Source 节点的三层 GraphRAG 构图、全局候选关系与 Graph/Hybrid 检索 | 上市公司＋行业 | 项目负责人（本次需求提出者） | V1-006、V1-010；主模型；Python 3.11 | SQLite/NetworkX 图可重建；Claim/Observation/Event 可回原文；七类关系仅在阻塞候选内生成；检索保持 ToolResult 与精确引用契约；离线测试、ruff 与真实冻结语料验收通过 | 待审（2026-10-12 使用 extractor v1.1 完成 3 份/418 页完整 PDF 重建：449 Passage、4,585 Evidence、4,920 记录、1,826 实体、17,077 条构图边；阻塞审核 623 个候选对后得到 174 条语义关系。8 问冻结评测中 Chunk 的来源 Top-1/目标页 Recall@5 均为 5/8，Hybrid 均为 8/8，并返回 27 个带结构记录的命中；平均延迟 0.55s→2.89s。完整流程生成 11 节、约 3.96 万字 Markdown 报告，三份来源均被正文引用；128 项相关回归与定向 ruff 通过。Python 3.12 全量 pytest 仍有 31 个既存环境/事件循环与 GBK 失败；Python 3.11、行业模式真实运行和领域人工复核待处理） |
+| GRAG-001 | 实现无 Source 节点的三层 GraphRAG、原子记录抽取、查询时关系子图与 Graph/Hybrid 检索 | 上市公司＋行业 | 项目负责人（本次需求提出者） | V1-006、V1-010；主模型；Python 3.11 | SQLite/NetworkX 基础图可重建；Claim/Observation/Event 可回原文并有材料性；查询先高召回 Record，再仅在阻塞候选内生成带属性的临时七类关系；ToolResult 与精确引用契约保持；离线测试、ruff 与冻结语料验收通过 | 待审（2026-10-17 已升级 Schema v1.1 / extractor v1.2：ingest 不再写七类全局语义边；新增 120 条宽 Claim 候选池、跨正文/属性/quote/章节/实体搜索、材料性软加权、查询时 24 Record 关系子图、0.8 置信门槛和确定性 hard gate；旧语义边从基础图遍历隔离；单来源不再固定截断为 3 条。104 项 GraphRAG/医药回归与定向 ruff 已通过；Python 3.12 全量为 194 passed/31 failed/2 skipped，31 项仍是既存事件循环及 GBK 环境问题。2026-10-12 的 3 份/418 页、4,920 记录和 8 问 Hybrid 8/8 结果保留为 v1.1 历史基线，需用 v1.2 重新完成 Claim Recall@pool、关系精确率/召回、端到端报告和 Python 3.11 验收） |
+| GRAG-002 | 实施 Claim 驱动动态 GraphRAG V2：命题身份、混合索引、候选/有效证据双池、验证路径和时间仲裁 | 上市公司＋行业 | 项目负责人（本次需求提出者） | GRAG-001；批准 PDF/监管/试验/论文；DeepSeek 主模型；Python 3.11；领域标注集 | 输入为现有分页证据索引，输出为不改变 ToolResult 引用契约的 Evidence Pack；来源断言与规范命题/独立研究分离；Claim Recall、边/路径、时间和报告指标分层验收；未运行验证器必须显式标记 | 进行中（2026-10-19 已落地 Schema v1.2 / extractor v1.3：proposition、qualifiers、assertion kind、canonical proposition、origin study、valid/recorded time，SQLite 迁移，多通道 RRF，Query 类型/子问题契约，CandidatePool/ActiveEvidence、trace/gap/verification 状态，以及扩展 query-edge 审计字段；40 项定向、107 项 GraphRAG/医药回归和 ruff 通过。Python 3.12 全量为 197 passed/31 failed/2 skipped，31 项仍是既存事件循环与 GBK 环境问题。Dense、真正的 gap 循环、Beam/verifier、仲裁事件与完整 PDF 重建尚未完成） |
 
-后续 RAG/图任务包括离线 Chunk 基线、`PharmaEvidenceSearchTool`、Claim–Evidence 构图、Graph/Hybrid 对照评测。只有 V1-006 完成并形成稳定主流程基线后，这些任务才进入“就绪”。
+2026-10-12 已将现行 GraphRAG 文档拆分为理论架构、实现规范、运行与评测三部分，并由
+[`docs/graph/v1/README.md`](./graph/v1/README.md) 统一标明当前规范与历史材料。后续工作以
+扩充冻结评测、行业模式验收和领域人工复核为主，不再以早期四层/Source 草案指导实现。
 
 ## 质量门槛
 
@@ -166,10 +169,17 @@ P0 是阻塞里程碑的任务；P1 重要但不阻塞；P2 为可延后的改�
 | 模型到达输出/交互上限时，章节可能停在工具动作、半句或半表格，但上游仍标为完成 | 最终报告章节缺失或不可读，运行成功形成假阳性 | 医药草稿强制完成标记、最小长度、动作残留与闭合检查；失败自动重试并失败关闭；润色失败只回退到已验证草稿 | V1-005 与每次完整报告 |
 | Graph/Hybrid 在受控资料包中回退全局 PDF 索引 | 引入未经批准或超过截止时间的证据，破坏报告边界 | DataCollector 将当前 Memory 的批准 source ID 固定为检索作用域；Graph 与 BM25 均强制过滤，显式越界 source_id 直接失败 | GRAG-001 与每次受控运行 |
 | 主模型返回空 JSON、Schema 外枚举或不闭合的 `<report>` | 空图被误记为成功、查询规划长时间阻塞或不完整分析进入写作 | 构图三次 JSON/Schema 重试且全失败不提交；QueryPlan 使用严格枚举与 30 秒超时；不闭合终止块按无效响应重试 | GRAG-001/V1-005 |
-| 大型 PDF 逐 chunk 使用主模型抽取，调用量与关系判定成本随文档增长 | 数百 chunk 年报构图时间与费用较高 | 418 页/449 块的 v1.1 成功构图约 35 分钟，采用受控并发、关闭思考模式的严格 JSON、文档哈希复用、失败率阈值和候选阻塞；后续仍需断点续建、调用/费用指标 | GRAG-001 后续性能评审 |
-| 关系候选被共同公司/监管机构等泛实体淹没 | 有效关系为零或产生大量低价值“不可比”边 | 只有药物、项目、靶点、适应症等高信号实体直接成对；公司、证券、监管机构、支付方和技术模态还须同领域且同指标/对象/事件类型；每对只评审一次 | GRAG-001 与每次关系重建 |
+| 大型 PDF 逐 chunk 使用主模型抽取，调用量随文档增长 | 数百 chunk 年报构图时间与费用较高 | 418 页/449 块的 v1.1 成功构图约 35 分钟；v1.2 ingest 取消全局关系调用并保留并发、严格 JSON、哈希复用和失败率阈值；后续仍需断点续建、调用/费用指标 | GRAG-001 后续性能评审 |
+| 查询关系候选被共同公司/监管机构等泛实体淹没 | 在线关系调用增加且产生低价值“不可比”边 | 先以 query 高召回 Record，再要求共享实体、同指标/对象/谓词/事件类型或同 Evidence 才成对；24 Record/100 对封顶并通过 hard gate | GRAG-001 每次查询子图验收 |
 | 模型在一个响应中返回多个读取/计算动作，解析器只执行一个 | 已检索证据未进入章节，报告误报“资料缺失” | 按出现顺序合并执行所有 `<execute>` 代码块；终止报告仅在位于最后动作时胜出；加入多动作回归测试 | 每次报告生成 |
-| Graph 命中被同一 Passage 的多个 EvidenceSpan 占满，或关系查询过滤掉实体角色边 | 其他页无法进入 top-k，七类关系虽存在却不返回依据 | 图命中在截断前按 source/chunk 聚合；关系过滤仅限制七类全局关系并保留结构/实体角色边；关系理由进入评分且限量返回 | GRAG-001 检索评测 |
+| Graph 命中被同一 Passage 的多个 EvidenceSpan 占满，或单来源固定上限压低召回 | 其他页无法进入 top-k，相关 Claim 在连边前丢失 | 命中在截断前按 source/chunk 聚合；单来源允许完整 top-k，多来源使用自适应上限；结构/实体角色边始终可遍历 | GRAG-001 检索评测 |
+| Graph Record 正文可回原文，但表格多值未完整结构化、关键页面零 Record | 图查询漏掉比较期、占比、完整管线或财务表，报告召回完整性被高估 | 表格按行列头生成多值结构；临床/监管/财务主表页面零 Record 即失败；保存 `no_record_reason` 并做页级覆盖验收 | GRAG-001 下一轮重建前 |
+| 七类关系被同 quote、共同公司或时间先后误导 | 错误等价/支持/替代进入 Evidence Pack | v1.2 不再复用全局语义边；按 query 阻塞候选并采用同 Evidence、口径对齐、明确更新信号和比较意图 hard gate；关系精确率达门槛前仅用于导航 | GRAG-001 下一轮关系验收 |
+| 查询宽候选池仍受词法别名、PDF 表格线性化和 Record 抽取覆盖限制 | 与问题相关的原子 Claim 在连边前已漏掉，后续子图无法恢复 | QueryPlan 扩展中英文别名/缩写/表头词；跨 record/attributes/quote/section/entity 检索；保留 BM25 并以 Claim Recall@pool、候选池大小消融和零 Record 页覆盖作为门槛 | GRAG-001 查询召回验收 |
+| 查询时关系分类增加一次主模型调用 | Graph/Hybrid 延迟、成本与超时率上升 | 只在 top Record 的阻塞候选对中判断，限制 24 条记录/100 对；失败保留基础 Claim 与 BM25 结果并显式 warning；持续记录 P95 延迟和费用 | GRAG-001 性能验收 |
+| canonical proposition 或 origin study 错误合并 | 不同试验被当成同一证据，或转载被错误计为独立验证 | 来源 Record 永不按命题 ID覆盖；origin study 优先强注册 ID；命题/研究身份分别抽检误合并率和漏合并率；不确定保持 needs_review | GRAG-002 实体与独立性验收 |
+| CandidatePool 很宽但 ActiveEvidence/验证器尚未完整实现 | 下游把候选关系误当成已证明路径，增加上下文和错误结论 | Evidence Pack 分离 candidate/active，`verification_status=not_run`；ToolResult 透传 trace/gaps；verifier 发布前查询边只用于导航 | GRAG-002 路径验证验收 |
+| 双时间字段存在但历史视图/仲裁表尚未实现 | 报告可能错误声称支持 as-known 回测或自动解决科学冲突 | 当前只保存 valid/recorded time；设计文档明确后续 append-only 与 arbitration；历史视图通过时间泄漏测试前不得对外宣称可用 | GRAG-002 时间验收 |
 
 上述风险来自 2026-09-18、2026-09-20 与 2026-09-22 的端到端运行复盘，详见 [FinSight 报告生成运行复盘](./v1/FINSIGHT_RUN_REVIEW_2026-09-18.md)、[FinSight 重跑复盘](./v1/FINSIGHT_RERUN_REVIEW_2026-09-20.md)与[报告生成调试复盘](./v1/REPORT_RUN_DEBUG_2026-09-22.md)。
 

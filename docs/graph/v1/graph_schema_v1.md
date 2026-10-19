@@ -1,5 +1,8 @@
 # 医药投研 Claim–Evidence Graph Schema v1
 
+> **历史草案提示（2026-10-12）：** 本文早于当前运行时 Schema，不代表现有
+> Claim/Observation/Event 三层实现。请从 [GraphRAG V1 文档导航](./README.md) 阅读现行文档。
+
 版本：1.0.0。状态：可实现的第一版规范，待多文档试抽取迭代。依据：本轮构图讨论与成员 E 的《副本combined_resources.xlsx》。本规范定义自己的图格式，不保证直接兼容 Youtu 的输入或检索器。
 
 ## 1. 如何使用文件

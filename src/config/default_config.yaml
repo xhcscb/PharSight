@@ -39,12 +39,14 @@ graph_build_on_ingest: true
 graph_store_path: './outputs/.graph_cache/pharsight_graph.sqlite3'
 graph_max_hops: 2
 graph_top_k: 8
+graph_claim_candidate_pool: 120
+graph_query_relation_record_limit: 24
 graph_query_planning_timeout: 30
 graph_build_concurrency: 4
 graph_json_max_tokens: 16384
 graph_max_extraction_failure_ratio: 0.1
 graph_relation_candidate_limit: 100
-graph_relation_confidence_threshold: 0.7
+graph_relation_confidence_threshold: 0.8
 
 # Conversation-history guards (characters) for long agent runs.
 # A single action result longer than max_action_result_chars is truncated

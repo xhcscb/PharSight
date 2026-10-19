@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,14 @@ Use one of Claim, Observation, Event. Observation attributes must retain object,
 metric, value and value_nature when present. Event attributes must retain subject, event_type,
 event_time, disclosure_time, jurisdiction, indication, prior_status and new_status when present.
 Claim attributes may retain predicate, qualifiers, forecast target and conditions.
+Every record must also separate proposition (subject/predicate/object or metric/value/event core)
+from qualifiers (trial, population, arm, dose, endpoint definition, timepoint, reporting period,
+geography, currency and other applicability conditions). Set assertion_kind, origin_study_id when
+an explicit trial/study identifier exists, and valid_from/valid_to only when stated by the source.
+For every atomic record, add materiality dimensions between 0 and 1: decision_impact,
+evidence_strength, novelty and time_sensitivity; add scope and a short reason grounded in the
+passage. Do not make materiality query-dependent. The deterministic aggregate score is computed
+by the application.
 Allowed domain values: clinical, financial, market, regulatory, commercial, mechanism, other.
 Allowed epistemic_status values: asserted, reported, estimated, forecast, opinion, hypothesis,
 unknown. Allowed polarity values: positive, negative, uncertain, neutral.
@@ -43,7 +52,12 @@ Allowed entity types: Company, Security, Drug, Program, Brand, Target, Modality,
 Trial, Regulator, Policy, Payer, MarketSegment, TechnologyPlatform, Transaction.
 Every record needs an exact, contiguous evidence_quote copied from the passage. Unknown values
 must remain absent or null. Output: {"records": [{"record_type": ..., "text": ...,
-"domain": ..., "epistemic_status": ..., "polarity": ..., "attributes": {},
+"domain": ..., "epistemic_status": ..., "polarity": ..., "assertion_kind": ...,
+"proposition": {}, "qualifiers": {}, "origin_study_id": null,
+"valid_from": null, "valid_to": null, "materiality": {
+"decision_impact": 0.0, "evidence_strength": 0.0, "novelty": 0.0,
+"time_sensitivity": 0.0, "scope": "company|product|trial|market|policy|accounting|other",
+"reason": ..., "score": 0.0}, "attributes": {},
 "evidence_quote": ..., "entities": [{"name": ..., "entity_type": ..., "role": ...,
 "aliases": [], "external_ids": {}, "confidence": 0.0}]}]}"""
 
@@ -205,7 +219,10 @@ class GraphBuilder:
                     f"({extraction_failures}/{passage_count} passages)"
                 )
             self.store.replace_document_bundle(bundle)
-            relation_count = await self.precompute_relations()
+            # Ingestion persists atomic records and their evidence/entity links only.
+            # Semantic record-to-record edges are query-scoped because relevance and
+            # comparability depend on the user's question.
+            relation_count = 0
             self.store.finish_build(run_id, "built", "\n".join(errors) or None)
             return BuildReport(
                 document_id=document_id,
@@ -434,11 +451,55 @@ class GraphBuilder:
                     continue
                 start, quote = located_quote
                 evidence_id = stable_id("evidence", passage_id, start, quote)
+                proposition = item.proposition or {
+                    key: item.attributes[key]
+                    for key in (
+                        "subject",
+                        "predicate",
+                        "object",
+                        "metric",
+                        "value",
+                        "event_type",
+                        "new_status",
+                    )
+                    if key in item.attributes
+                }
+                qualifier_keys = {
+                    "trial_id",
+                    "phase",
+                    "population",
+                    "line_of_therapy",
+                    "arm",
+                    "design",
+                    "comparator",
+                    "dose",
+                    "endpoint",
+                    "estimand",
+                    "analysis_set",
+                    "timepoint",
+                    "reporting_period",
+                    "geography",
+                    "unit",
+                    "currency",
+                    "conditions",
+                }
+                qualifiers = item.qualifiers or {
+                    key: value
+                    for key, value in item.attributes.items()
+                    if key in qualifier_keys and value is not None
+                }
+                origin_study_id = item.origin_study_id or item.attributes.get("trial_id")
+                canonical_proposition_id = stable_id(
+                    "proposition",
+                    item.record_type.value,
+                    proposition,
+                    qualifiers,
+                    item.polarity,
+                    item.epistemic_status,
+                )
                 record_id = stable_id(
                     "record",
-                    item.record_type.value,
-                    item.text,
-                    item.attributes,
+                    canonical_proposition_id,
                     evidence_id,
                 )
                 evidence.append(
@@ -459,6 +520,16 @@ class GraphBuilder:
                         domain=item.domain,
                         epistemic_status=item.epistemic_status,
                         polarity=item.polarity,
+                        assertion_kind=item.assertion_kind,
+                        proposition=proposition,
+                        qualifiers=qualifiers,
+                        canonical_proposition_id=canonical_proposition_id,
+                        origin_study_id=origin_study_id,
+                        valid_from=item.valid_from,
+                        valid_to=item.valid_to,
+                        recorded_at=document.retrieved_at
+                        or datetime.now().astimezone().isoformat(),
+                        materiality=item.materiality,
                         attributes=item.attributes,
                         evidence_ids=[evidence_id],
                         model_name=self.model_name,

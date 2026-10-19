@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from src.graph_rag import GraphBuilder, GraphRetriever, GraphStore
 from src.graph_rag.builder import _locate_evidence_quote
-from src.graph_rag.models import ReviewStatus
+from src.graph_rag.models import EvidenceRelation, ReviewStatus
 from src.graph_rag.retriever import _reporting_periods, _tokens
 from src.tools import get_tool_by_name
 from src.tools.document.document_index import build_document_index
@@ -190,7 +191,7 @@ async def test_shared_quote_is_deduplicated_and_invalid_peer_record_is_isolated(
 
 
 @pytest.mark.asyncio
-async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path):
+async def test_build_persists_atomic_records_then_builds_query_scoped_relations(tmp_path):
     observation_quote = "48周体重下降22.5%，结果为直接报告值"
     event_quote = "2026年5月，测试药物的上市申请获监管机构受理"
     llm = MockLLM(
@@ -219,59 +220,17 @@ async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path)
                 "new_status": "accepted",
             },
         ),
-        {
-            "relations": [
-                {
-                    "left_id": "placeholder",
-                    "right_id": "placeholder",
-                    "relation": "SUPPLEMENTS",
-                    "confidence": 0.95,
-                    "reason": "同一药物的临床结果与监管进展互补",
-                    "comparability": {"shared_object": True},
-                }
-            ]
-        },
     )
     store = GraphStore(tmp_path / "graph.sqlite3")
     builder = GraphBuilder(store, llm, "deepseek-flash")
 
-    # The relation response needs the deterministic record IDs. Build extraction first,
-    # inspect candidates, then substitute IDs before relation validation.
-    original_generate = builder._generate_json
-    call_count = 0
-
-    async def generate_with_relation_ids(prompt, payload):
-        nonlocal call_count
-        call_count += 1
-        if "pairs" in payload:
-            pair = payload["pairs"][0]
-            return {
-                "relations": [
-                    {
-                        "left_id": pair["left_id"],
-                        "right_id": pair["right_id"],
-                        "relation": "SUPPLEMENTS",
-                        "confidence": 0.95,
-                        "reason": "同一药物的临床结果与监管进展互补",
-                        "comparability": {"shared_object": True},
-                    },
-                    {
-                        "left_id": pair["left_id"],
-                        "right_id": pair["right_id"],
-                        "relation": "INCOMPAR",
-                    },
-                ]
-            }
-        return await original_generate(prompt, payload)
-
-    builder._generate_json = generate_with_relation_ids
     report = await builder.build_document(
         document_index(), as_of="2026-10-10T23:59:59+08:00"
     )
 
     assert report.status == "built"
     assert report.record_count == 2
-    assert report.relation_count == 1
+    assert report.relation_count == 0
     snapshot = store.snapshot()
     assert snapshot["documents"] == 1
     assert snapshot["passages"] == 2
@@ -280,7 +239,10 @@ async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path)
     assert snapshot["entities"] == 1
     graph = store.to_networkx()
     assert not any(data.get("node_type") == "Source" for _, data in graph.nodes(data=True))
-    assert any(data.get("relation") == "SUPPLEMENTS" for *_, data in graph.edges(data=True))
+    assert not any(data.get("relation") == "SUPPLEMENTS" for *_, data in graph.edges(data=True))
+
+    with store.connect() as connection:
+        record_ids = [row[0] for row in connection.execute("SELECT id FROM records ORDER BY id")]
 
     planner = MockLLM(
         {
@@ -290,18 +252,38 @@ async def test_build_persists_three_layers_relations_and_is_idempotent(tmp_path)
             "keywords": ["临床结果", "监管进展"],
             "relation_types": ["SUPPLEMENTS"],
             "max_hops": 2,
-        }
+        },
+        {
+            "relations": [
+                {
+                    "left_id": record_ids[0],
+                    "right_id": record_ids[1],
+                    "relation": "SUPPLEMENTS",
+                    "confidence": 0.95,
+                    "reason": "同一药物的临床结果与监管进展互补",
+                    "comparability": {"shared_object": True},
+                }
+            ]
+        },
     )
     pack = await GraphRetriever(store, planner, "deepseek-flash").search(
         "测试药物的临床结果与监管进展如何互补？", backend="graph", top_k=5
     )
+    assert pack.query_edges
+    assert all(edge.origin == "query_time" for edge in pack.query_edges)
+    assert any(
+        edge.relation.value == "SUPPLEMENTS" for edge in pack.query_edges
+    ), [edge.model_dump(mode="json") for edge in pack.query_edges]
+    assert all(edge.cache_key.startswith("edge-cache:") for edge in pack.query_edges)
+    assert all(edge.context_compatible for edge in pack.query_edges)
+    assert all(edge.edge_evidence_ids for edge in pack.query_edges)
     assert any(hit.relation_reasons for hit in pack.hits)
     assert any(len(path) == 2 for hit in pack.hits for path in hit.graph_paths)
 
-    calls_before = call_count
+    calls_before = len(llm.calls)
     reused = await builder.build_document(document_index())
     assert reused.status == "reused"
-    assert call_count == calls_before
+    assert len(llm.calls) == calls_before
 
 
 @pytest.mark.asyncio
@@ -475,6 +457,230 @@ def test_review_status_and_projection_rebuild(tmp_path):
     assert store.to_networkx().number_of_nodes() == 0
 
 
+def test_store_migrates_v12_record_identity_and_bitemporal_columns(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE records (
+                id TEXT PRIMARY KEY, record_type TEXT NOT NULL, text TEXT NOT NULL,
+                domain TEXT NOT NULL, epistemic_status TEXT NOT NULL, polarity TEXT NOT NULL,
+                materiality_json TEXT NOT NULL DEFAULT '{}', attributes_json TEXT NOT NULL,
+                evidence_ids_json TEXT NOT NULL, review_status TEXT NOT NULL,
+                extractor_version TEXT NOT NULL, model_name TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "record:legacy",
+                "Observation",
+                "试验NCT0001报告ORR为48%",
+                "clinical",
+                "reported",
+                "neutral",
+                "{}",
+                json.dumps({"metric": "ORR", "value": 0.48, "trial_id": "NCT0001"}),
+                "[]",
+                "candidate",
+                "graphrag-v1.2",
+                "deepseek-flash",
+            ),
+        )
+
+    store = GraphStore(path)
+
+    with store.connect() as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(records)")}
+    assert {
+        "assertion_kind",
+        "proposition_json",
+        "qualifiers_json",
+        "canonical_proposition_id",
+        "origin_study_id",
+        "valid_from",
+        "valid_to",
+        "recorded_at",
+    } <= columns
+    with store.connect() as connection:
+        row = connection.execute(
+            """SELECT canonical_proposition_id, origin_study_id, assertion_kind,
+                      proposition_json, qualifiers_json, recorded_at
+               FROM records WHERE id='record:legacy'"""
+        ).fetchone()
+    assert row["canonical_proposition_id"].startswith("proposition:")
+    assert row["origin_study_id"] == "NCT0001"
+    assert row["assertion_kind"] == "study_reported_observation"
+    assert json.loads(row["proposition_json"])["metric"] == "ORR"
+    assert json.loads(row["qualifiers_json"])["trial_id"] == "NCT0001"
+    assert row["recorded_at"]
+
+
+@pytest.mark.asyncio
+async def test_materiality_dimensions_are_scored_and_persisted(tmp_path):
+    quote = "测试药物获得关键适应症上市批准"
+    response = extraction_response(
+        "Event",
+        quote,
+        quote,
+        {"event_type": "approval", "event_time": "2026-10-01"},
+    )
+    response["records"][0]["materiality"] = {
+        "decision_impact": 1.0,
+        "evidence_strength": 0.8,
+        "novelty": 0.9,
+        "time_sensitivity": 1.0,
+        "scope": "product",
+        "reason": "关键适应症首次获批",
+        "score": 0.0,
+    }
+    index = document_index()
+    index["chunks"] = [dict(index["chunks"][0], text=quote)]
+    store = GraphStore(tmp_path / "graph.sqlite3")
+
+    report = await GraphBuilder(store, MockLLM(response), "deepseek-flash").build_document(index)
+
+    assert report.status == "built"
+    with store.connect() as connection:
+        materiality = json.loads(connection.execute("SELECT materiality_json FROM records").fetchone()[0])
+    assert materiality["score"] == pytest.approx(0.93)
+    assert materiality["scope"] == "product"
+
+
+@pytest.mark.asyncio
+async def test_source_assertions_share_canonical_proposition_but_keep_independent_provenance(
+    tmp_path,
+):
+    quote = "试验NCT0001报告ORR为48%"
+    response = extraction_response(
+        "Observation",
+        quote,
+        quote,
+        {"metric": "ORR", "value": 0.48, "value_nature": "reported", "trial_id": "NCT0001"},
+    )
+    response["records"][0].update(
+        {
+            "assertion_kind": "study_reported_observation",
+            "proposition": {"metric": "ORR", "value": 0.48},
+            "qualifiers": {"trial_id": "NCT0001", "population": "ITT"},
+            "origin_study_id": "NCT0001",
+            "valid_from": "2026-01-01",
+        }
+    )
+    store = GraphStore(tmp_path / "graph.sqlite3")
+    first = document_index()
+    first["chunks"] = [dict(first["chunks"][0], text=quote)]
+    second = document_index()
+    second["document_hash"] = "d" * 64
+    second["source_id"] = "WEB-TEST-002"
+    second["chunks"] = [
+        dict(first["chunks"][0], chunk_id="dddddddddddd:p0001:c001", text=quote)
+    ]
+
+    await GraphBuilder(store, MockLLM(response), "deepseek-flash").build_document(first)
+    await GraphBuilder(store, MockLLM(response), "deepseek-flash").build_document(second)
+
+    with store.connect() as connection:
+        rows = connection.execute(
+            """SELECT id, canonical_proposition_id, origin_study_id, assertion_kind,
+                      valid_from, recorded_at, proposition_json, qualifiers_json
+               FROM records ORDER BY id"""
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["id"] != rows[1]["id"]
+    assert rows[0]["canonical_proposition_id"] == rows[1]["canonical_proposition_id"]
+    assert {row["origin_study_id"] for row in rows} == {"NCT0001"}
+    assert all(row["assertion_kind"] == "study_reported_observation" for row in rows)
+    assert all(row["valid_from"] == "2026-01-01" for row in rows)
+    assert all(row["recorded_at"] for row in rows)
+    assert json.loads(rows[0]["proposition_json"])["metric"] == "ORR"
+    assert json.loads(rows[0]["qualifiers_json"])["population"] == "ITT"
+
+    pack = await GraphRetriever(store).search("试验NCT0001 ORR", backend="graph", top_k=2)
+    origin_edges = [edge for edge in pack.query_edges if edge.relation.value == "SAME_ORIGIN_AS"]
+    assert origin_edges
+    assert origin_edges[0].comparability["same_origin_study"] is True
+
+
+@pytest.mark.asyncio
+async def test_evidence_pack_separates_candidate_pool_active_evidence_and_trace(tmp_path):
+    quote = "测试药物在III期试验中报告主要终点结果"
+    response = extraction_response("Claim", quote, quote, {"predicate": "报告主要终点"})
+    index = document_index()
+    index["chunks"] = [dict(index["chunks"][0], text=quote)]
+    store = GraphStore(tmp_path / "graph.sqlite3")
+    await GraphBuilder(store, MockLLM(response), "deepseek-flash").build_document(index)
+
+    pack = await GraphRetriever(store).search("测试药物主要终点", backend="graph", top_k=1)
+
+    assert pack.candidate_record_ids
+    assert pack.active_record_ids
+    assert set(pack.active_record_ids) <= set(pack.candidate_record_ids)
+    assert pack.trace_id.startswith("trace:")
+    assert pack.retrieval_rounds[0].candidate_record_ids == pack.candidate_record_ids
+    assert pack.verification_status == "not_run"
+    assert pack.hits[0].retrieval_signals["claim"] > 0
+
+
+def test_query_relation_gate_rejects_same_quote_with_different_metric():
+    relation = EvidenceRelation(
+        left_id="record:left",
+        right_id="record:right",
+        relation="EQUIVALENT_TO",
+        confidence=1.0,
+        reason="same quote",
+    )
+    pair = {
+        "left": {
+            "attributes": {"object": "直销", "metric": "营业收入", "value": 100},
+        },
+        "right": {
+            "attributes": {"object": "直销", "metric": "毛利率", "value": 90},
+        },
+        "shared_entities": ["测试公司"],
+        "shared_dimensions": ["object"],
+    }
+
+    assert not GraphRetriever._query_relation_allowed(relation, pair, True)
+
+
+@pytest.mark.asyncio
+async def test_single_source_high_recall_pool_is_not_capped_at_three(tmp_path):
+    index = document_index()
+    index["chunks"] = []
+    responses = []
+    for number in range(5):
+        text = f"测试药物第{number + 1}项临床结果"
+        index["chunks"].append(
+            {
+                "chunk_id": f"aaaaaaaaaaaa:p{number + 1:04d}:c001",
+                "page_start": number + 1,
+                "page_end": number + 1,
+                "section_title": "临床结果",
+                "content_hash": str(number) * 64,
+                "text": text,
+            }
+        )
+        responses.append(
+            extraction_response(
+                "Claim",
+                text,
+                text,
+                {"predicate": "临床结果"},
+            )
+        )
+    store = GraphStore(tmp_path / "graph.sqlite3")
+    await GraphBuilder(store, MockLLM(*responses), "deepseek-flash").build_document(index)
+
+    pack = await GraphRetriever(store).search(
+        "测试药物临床结果",
+        backend="graph",
+        top_k=5,
+    )
+
+    assert len(pack.hits) == 5
+    assert all("claim" in hit.retrieval_channels for hit in pack.hits)
+
+
 def test_store_transaction_rolls_back_invalid_bundle(tmp_path):
     store = GraphStore(tmp_path / "graph.sqlite3")
     before = store.snapshot()
@@ -588,6 +794,7 @@ async def test_graph_tool_returns_toolresult_compatible_evidence(tmp_path):
     assert results[0].source_id == "WEB-TEST-001"
     assert quote in results[0].data["content"]
     assert results[0].data["retrieval_hits"][0]["graph_paths"]
+    assert results[0].data["query_edges"] == []
 
 
 def test_collector_merge_uses_graph_passage_text_instead_of_none():

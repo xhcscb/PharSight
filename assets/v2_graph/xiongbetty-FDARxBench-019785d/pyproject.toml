@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fdarxbench"
+version = "0.1.0"
+description = "Benchmark for evaluating LLM performance on FDA drug label QA tasks"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
